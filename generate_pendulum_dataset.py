@@ -59,7 +59,7 @@ def collect_data(num_sequences: int, sequence_length: int):
                 data['actions'].append(actions)
                 observations, actions = [], []
                 episodes += 1
-    np.savez(f'dataset/validation_mod.npz', obs=np.array(data['obs']), actions=np.asarray(data['actions']))
+    np.savez(f'datasets/pendulum/validation_mod.npz', obs=np.array(data['obs']), actions=np.asarray(data['actions']))
 
 
 if __name__ == '__main__':

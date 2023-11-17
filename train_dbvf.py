@@ -74,7 +74,7 @@ def load_data(file: str, device='cpu') -> Dataset:
 def train():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     writer = SummaryWriter()
-    datasets = dict((k, load_data(file=f'dataset/{k}.npz', device=device)) for k in ['training_mod', 'validation_mod'])
+    datasets = dict((k, load_data(file=f'datasets/pendulum/{k}.npz', device=device)) for k in ['training_mod', 'validation_mod'])
 
     train_loader = DataLoader(datasets['training_mod'], batch_size=batch_size, shuffle=True)
     validation_loader = DataLoader(datasets['validation_mod'], batch_size=batch_size, shuffle=False)
@@ -126,7 +126,7 @@ def train():
 
 def generate(filename):
     dvbf = torch.load('checkpoints/dvbf.th').to('cpu')
-    dataset = load_data('dataset/validation_mod.npz')
+    dataset = load_data('datasets/pendulum/validation_mod.npz')
     x = dataset[40][0].unsqueeze(dim=0)
     u = dataset[40][1].unsqueeze(dim=0)
     T = u.shape[1]
