@@ -127,11 +127,11 @@ class DVBF(nn.Module):
 
     def reconstruct(self, z: torch.Tensor, return_dist=False):
         x_rec_mean = self.observation_model(z).view(-1, self.dim_x)
-        p_x = torch.distributions.MultivariateNormal(x_rec_mean, covariance_matrix=torch.eye(self.dim_x).to(x_rec_mean))
         if return_dist:
+            p_x = torch.distributions.MultivariateNormal(x_rec_mean, covariance_matrix=torch.eye(self.dim_x).to(x_rec_mean))
             return p_x, x_rec_mean
         else:
-            return p_x.sample()
+            return x_rec_mean
 
     def loss(self, x, u):
         z, info = self.filter(x, u)
@@ -149,18 +149,13 @@ class DVBF(nn.Module):
         kl_loss = 0.5 * torch.mean(w_mean.pow(2) + w_logstds.exp() - w_logstds - 1)
         # logprob_x = p_x.log_prob(x.view(-1, self.dim_x))
         # w_mean, w_std = w_means.view(-1, self.dkl_weightim_w), w_stds.view(-1, self.dim_w)
-        # w_stds = torch.exp(w_logstds) + 1e-3
+        # w_stds = torch.exp(w_logstds)
         # q_w = torch.distributions.MultivariateNormal(w_mean, torch.diag_embed(w_stds))
         # prior_w = torch.distributions.MultivariateNormal(loc=torch.zeros_like(w_mean), covariance_matrix=torch.eye(self.dim_w).to(w_mean))
         # kl_loss = torch.distributions.kl_divergence(q_w, prior_w).sum()
         # loss = logprob_x.sum() - torch.distributions.kl_divergence(q_w, prior_w).sum()
         # loss = c * p_x.log_prob(x.view(-1, self.dim_x)) - q_w.log_prob(w.view(-1, self.dim_w)) + c * prior_w.log_prob(w.view(-1, self.dim_w))
 
-        loss = rec_loss + kl_loss
+        loss = (rec_loss + kl_loss)*100
 
         return loss
-
-
-
-
-
