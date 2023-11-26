@@ -13,14 +13,14 @@ class PendulumEnv(gym.Env):
         'video.frames_per_second': 30
     }
 
-    def __init__(self, g=9.81):
-        self.max_speed = 10
-        self.max_torque = 1.5
+    def __init__(self, parameters, g=9.81):
+        self.max_speed = 20
+        self.max_torque = 0.5
         self.dt = .05
         self.g = g
-        self.m = 1.
-        self.l = 1.
-        self.mu = 0.5
+        self.l = parameters[0]
+        self.m = parameters[1]
+        self.mu = parameters[2]
         self.viewer = None
 
         high = np.array([1., 1., self.max_speed], dtype=np.float32)
@@ -45,25 +45,24 @@ class PendulumEnv(gym.Env):
         th, thdot = self.state  # th := theta
 
         g = self.g
-        m = self.m
-        l = self.l
         dt = self.dt
-        mu = self.mu
+
         # u = np.clip(u, -self.max_torque, self.max_torque)[0]
         self.last_u = u  # for rendering
         costs = angle_normalize(th) ** 2 + .1 * thdot ** 2 + .001 * (u ** 2)
 
         # newthdot = thdot + (-3 * g / (2 * l) * np.sin(th + np.pi) + 3. / (m * l ** 2) * u) * dt
-        newthdot = (1-mu*dt/(m*l))*thdot + (g*dt/l)*np.sin(th) + dt*u/(m*l**2)
+        newthdot = (1-self.mu*dt/(self.m*self.l))*thdot + (g*dt/self.l)*np.sin(th) + dt*u/(self.m*self.l**2)
         newth = th + newthdot * dt
         newthdot = np.clip(newthdot, -self.max_speed, self.max_speed)
 
         self.state = np.array([newth, newthdot])
-        return self._get_obs(), -costs, False, {}
+        return self._get_obs(), np.array([self.state[0], self.state[1]]), False, {}
 
     def reset(self):
         high = np.array([np.pi, 1])
-        self.state = self.np_random.uniform(low=-high, high=high)
+        # self.state = self.np_random.uniform(low=-high, high=high)
+        self.state = np.array([np.pi/4, 0])
         self.last_u = None
         return self._get_obs()
 
@@ -76,8 +75,8 @@ class PendulumEnv(gym.Env):
             from gym.envs.classic_control import rendering
             self.viewer = rendering.Viewer(500, 500)
             self.viewer.set_bounds(-2.2, 2.2, -2.2, 2.2)
-            rod = rendering.make_capsule(1.5, 0.75)
-            rod.set_color(.9, .3, .3)
+            rod = rendering.make_capsule(self.l*2, 0.5)
+            rod.set_color(.0, .0, .0)
             self.pole_transform = rendering.Transform()
             rod.add_attr(self.pole_transform)
             self.viewer.add_geom(rod)

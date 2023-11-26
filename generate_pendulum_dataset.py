@@ -16,51 +16,56 @@ from gym.wrappers.pixel_observation import PixelObservationWrapper
 
 from model import DVBF
 from wrapper import PixelDictWrapper, PendulumEnv
-
-dim_z = 3
-dim_x = (16, 16)
-dim_u = 1
-dim_a = 16
-dim_w = 3
-
-
-def make_env():
-    env = PendulumEnv()
-    env.reset()
-    env = PixelDictWrapper(PixelObservationWrapper(env))
-    env = GrayScaleObservation(env)
-    env = ResizeObservation(env, shape=(16, 16))
-    #print(env.action_space)
-    #print(env.observation_space)
-    return env
+import itertools
 
 
 def collect_data(num_sequences: int, sequence_length: int):
-    data = dict(obs=[], actions=[])
-    env = make_env()
-    episodes = 0
-    while episodes < num_sequences:
-        print("Episode number: ", episodes)
-        obs = env.reset()
-        done, t = False, 0
-        observations, actions = [], []
-        while t <= sequence_length:
-            action = env.action_space.sample()
-            observations.append(obs)
-            actions.append(action)
-            obs, reward, done, info = env.step(action)
-            cv2.imshow(mat=obs, winname='generated')
-            cv2.waitKey(5)
-            #plt.imshow(obs)
-            #plt.show()
-            t += 1
-            if t == sequence_length:
-                data['obs'].append(observations)
-                data['actions'].append(actions)
-                observations, actions = [], []
-                episodes += 1
-    np.savez(f'datasets/pendulum/validation_mod.npz', obs=np.array(data['obs']), actions=np.asarray(data['actions']))
+    data = dict(obs=[], actions=[], states=[])
+    # Generate num_sequences trajectories for each parameters
+    l = np.linspace(0.5, 1.5, 5)
+    m = np.linspace(0.1, 1.0, 5)
+    mu = np.linspace(0.01, 0.5, 5)
+
+    for parameters in itertools.product(l, m, mu):
+        env = PendulumEnv(parameters)
+        env.reset()
+        env = PixelDictWrapper(PixelObservationWrapper(env))
+        env = GrayScaleObservation(env)
+        env = ResizeObservation(env, shape=(32, 32))
+        observations, actions, states = [], [], []
+        episodes = 0
+        while episodes < num_sequences:
+            print("Episode number: ", episodes)
+            print("Current parameters:", parameters)
+            t = 0
+            vis_obs = env.reset()
+            vis_obs = 255 - vis_obs
+            state = env.state
+            while t <= sequence_length:
+                action = env.action_space.sample()
+                observations.append(vis_obs)
+                actions.append(action)
+                states.append(state)
+                vis_obs, state, _, _ = env.step(action)
+                vis_obs = 255 - vis_obs
+                # cv2.imshow(mat=vis_obs, winname='generated')
+                # cv2.waitKey(5)
+                # plt.imshow(obs)
+                # plt.show()
+                t += 1
+                if t == sequence_length:
+                    data['obs'].append(observations)
+                    data['actions'].append(actions)
+                    data['states'].append(state)
+                    observations, actions, states = [], [], []
+                    episodes += 1
+
+        env.close()
+        del env
+
+
+# np.savez(f'dataset/training_ext.npz', obs=np.array(data['obs']), actions=np.asarray(data['actions']))
 
 
 if __name__ == '__main__':
-    collect_data(500, 20)
+    collect_data(10, 15)
