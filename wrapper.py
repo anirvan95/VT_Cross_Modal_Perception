@@ -15,7 +15,7 @@ class PendulumEnv(gym.Env):
 
     def __init__(self, parameters, g=9.81):
         self.max_speed = 20
-        self.max_torque = 0.5
+        self.max_torque = 1.0
         self.dt = .05
         self.g = g
         self.l = parameters[0]
@@ -57,12 +57,11 @@ class PendulumEnv(gym.Env):
         newthdot = np.clip(newthdot, -self.max_speed, self.max_speed)
 
         self.state = np.array([newth, newthdot])
-        return self._get_obs(), np.array([self.state[0], self.state[1]]), False, {}
+        return self._get_obs(), self.state, False, {}
 
     def reset(self):
         high = np.array([np.pi, 1])
-        # self.state = self.np_random.uniform(low=-high, high=high)
-        self.state = np.array([np.pi/4, 0])
+        self.state = self.np_random.uniform(low=-high, high=high)
         self.last_u = None
         return self._get_obs()
 
@@ -75,7 +74,7 @@ class PendulumEnv(gym.Env):
             from gym.envs.classic_control import rendering
             self.viewer = rendering.Viewer(500, 500)
             self.viewer.set_bounds(-2.2, 2.2, -2.2, 2.2)
-            rod = rendering.make_capsule(self.l*2, 0.5)
+            rod = rendering.make_capsule(self.l, 0.35)
             rod.set_color(.0, .0, .0)
             self.pole_transform = rendering.Transform()
             rod.add_attr(self.pole_transform)

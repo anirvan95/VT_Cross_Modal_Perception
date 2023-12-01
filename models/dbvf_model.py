@@ -14,9 +14,9 @@ class DVBF(nn.Module):
         self.dim_u = dim_u
         self.ci = 1.0
         # Initial Network
-        self.initial_lstm = nn.LSTM(input_size=dim_x, batch_first=True, hidden_size=hidden_size, bidirectional=True)
+        # self.initial_lstm = nn.LSTM(input_size=dim_x, batch_first=True, hidden_size=hidden_size, bidirectional=True)
         self.initial_to_params = nn.Sequential(
-            nn.Linear(in_features=2*hidden_size, out_features=hidden_size),
+            nn.Linear(in_features=self.dim_x, out_features=hidden_size),
             nn.ReLU(),
             nn.Linear(in_features=hidden_size, out_features=2*dim_w)
         )
@@ -58,9 +58,9 @@ class DVBF(nn.Module):
         eps = torch.randn_like(logstd)
         return mu + eps * std
 
-    def get_initial_samples(self, x: torch.Tensor) -> Tuple[torch.distributions.Distribution, torch.Tensor]:
-        output, (hidden, cell_states) = self.initial_lstm(x)
-        w_params = self.initial_to_params(output[:, -1])
+    def get_initial_samples(self, x_1):
+        # output, (hidden, cell_states) = self.initial_lstm(x)
+        w_params = self.initial_to_params(x_1)
         mu, logstd = torch.split(w_params, split_size_or_sections=self.dim_w, dim=1)
         w1 = self.generate_samples(mu, logstd)
         z1 = self.w1_to_z1(w1)
@@ -87,7 +87,7 @@ class DVBF(nn.Module):
     def filter(self, x: torch.Tensor, u: torch.Tensor):
         num_obs = x.shape[1]
         N, T, _ = u.shape
-        mu, logstd, z_t, w_t = self.get_initial_samples(x)
+        mu, logstd, z_t, w_t = self.get_initial_samples(x[:, 0])
         z = [z_t]
         w = [w_t]
         w_means = [mu]
@@ -156,6 +156,6 @@ class DVBF(nn.Module):
         # loss = logprob_x.sum() - torch.distributions.kl_divergence(q_w, prior_w).sum()
         # loss = c * p_x.log_prob(x.view(-1, self.dim_x)) - q_w.log_prob(w.view(-1, self.dim_w)) + c * prior_w.log_prob(w.view(-1, self.dim_w))
 
-        loss = (rec_loss + kl_loss)*100
+        loss = rec_loss*100 + kl_loss*50
 
         return loss

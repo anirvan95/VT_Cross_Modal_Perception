@@ -1,13 +1,7 @@
-import time
-import imageio
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.distributions as td
-from torch.optim.lr_scheduler import ExponentialLR
-from torchvision import transforms
-from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import TensorDataset, DataLoader, Dataset
+
 '''
 file = 'dataset/training.npz'
 input_data = data['data']
@@ -19,33 +13,37 @@ for i in range(0, 15):
 
 plt.show()
 '''
-dim_z = 3
-dim_x = (16, 16)
+dim_z = 5
+dim_x = (32, 32)
 dim_u = 1
 dim_a = 16
 dim_w = 3
-batch_size = 32
+batch_size = 1
 num_iterations = int(5000)
 learning_rate = 0.01
 
 
 def load_data(file: str, device='cpu') -> Dataset:
-    data = torch.from_numpy(np.load(file)['data']).to(device)
-    x, u = data[..., :-1], data[..., -1:]
-    x = x.to(torch.float32) / 255. - 0.5
-    return TensorDataset(x, u)
+    x = torch.from_numpy(np.load(file)['obs']).to(device)
+    x = x.to(torch.float32) / 255
+    x = x.view([x.shape[0], x.shape[1], x.shape[2] * x.shape[3]])
+    u = torch.from_numpy(np.load(file)['actions']).to(device)
+    u = u.to(torch.float32)
+    p = torch.from_numpy(np.load(file)['parameters']).to(device)
+    p = p.to(torch.float32)
+    s = torch.from_numpy(np.load(file)['states']).to(device)
+    s = s.to(torch.float32)
+
+    return TensorDataset(x, u, s, p)
 
 
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-datasets = dict((k, load_data(file=f'dataset/{k}.npz', device=device)) for k in ['training', 'test', 'validation'])
-
-train_loader = DataLoader(datasets['training'], batch_size=batch_size, shuffle=True)
-validation_loader = DataLoader(datasets['validation'], batch_size=batch_size, shuffle=False)
+device = 'cpu'
+datasets = dict((k, load_data(file=f'datasets/pendulum/{k}.npz', device=device)) for k in ['training_params'])
+train_loader = DataLoader(datasets['training_params'], batch_size=batch_size, shuffle=True)
 
 i = 0
 for batch in train_loader:
-    x, u = batch[0], batch[1]
+    x, u, s, p = batch[0], batch[1], batch[2], batch[3]
     print(u.shape)
     print(i)
     i += 1
