@@ -14,7 +14,7 @@ from torch.utils.data import TensorDataset, DataLoader, Dataset
 from gym.wrappers import GrayScaleObservation, FlattenObservation, TransformObservation, ResizeObservation
 from gym.wrappers.pixel_observation import PixelObservationWrapper
 import matplotlib.cm as cm
-from model import DVBF
+from models.dbvf_model import DVBF
 from wrapper import PixelDictWrapper, PendulumEnv
 
 dim_z = 3
