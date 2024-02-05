@@ -13,6 +13,7 @@ for i in range(0, 15):
 
 plt.show()
 '''
+
 dim_z = 5
 dim_x = (32, 32)
 dim_u = 1

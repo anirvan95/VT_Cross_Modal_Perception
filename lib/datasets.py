@@ -22,6 +22,27 @@ class Shapes(object):
         return x
 
 
+class Pendulum(object):
+    def __init__(self, dataset_zip=None):
+        loc = 'datasets/pendulum/training_n.npz'
+        if dataset_zip is None:
+            self.dataset_zip = np.load(loc)
+        else:
+            self.dataset_zip = dataset_zip
+
+        self.imgs = torch.from_numpy(self.dataset_zip['obs']).float()
+        self.imgs = self.imgs/255
+        num_trajectories = self.imgs.shape[0]
+        self.imgs = self.imgs.view(num_trajectories*15, 16, 16)
+
+    def __len__(self):
+        return self.imgs.size(0)
+
+    def __getitem__(self, index):
+        x = self.imgs[index].view(1, 16, 16)
+        return x
+
+
 class Dataset(object):
     def __init__(self, loc):
         self.dataset = torch.load(loc).float().div(255).view(-1, 1, 64, 64)

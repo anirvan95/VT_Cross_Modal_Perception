@@ -14,15 +14,16 @@ from torch.utils.data import TensorDataset, DataLoader, Dataset
 from gym.wrappers import GrayScaleObservation, FlattenObservation, TransformObservation, ResizeObservation
 from gym.wrappers.pixel_observation import PixelObservationWrapper
 import matplotlib.cm as cm
-from models.dbvf_model import DVBF
+from model_PCMC import DVBF
 from wrapper import PixelDictWrapper, PendulumEnv
 
 dim_z = 3
 dim_x = (16, 16)
 dim_u = 1
 dim_a = 1
-dim_w = 5
-batch_size = 500
+dim_beta = 15   # Fixed from before
+dim_alpha = 3
+batch_size = 1000
 num_iterations = int(5e5)
 learning_rate = 0.1
 
@@ -44,8 +45,12 @@ def train():
     train_loader = DataLoader(datasets['training_n'], batch_size=batch_size, shuffle=True)
     # validation_loader = DataLoader(datasets['validation_mod'], batch_size=batch_size, shuffle=False)
 
-    dvbf = DVBF(dim_x=16*16, dim_u=dim_u, dim_z=dim_z, dim_w=dim_w).to(device)
+    dvbf = DVBF(dim_x=16*16, dim_u=dim_u, dim_z=dim_z, dim_alpha=dim_alpha, dim_beta=dim_beta, batch_size=batch_size).to(device)
     # dvbf = torch.load('dvbf.th').to(device)
+
+    # Freeze the VAE model
+    for param in dvbf.vae.parameters():
+        param.requires_grad = False
 
     # optimizer = torch.optim.Adam(dvbf.parameters(), lr=learning_rate)
     optimizer = torch.optim.Adadelta(dvbf.parameters(), lr=learning_rate)
@@ -92,8 +97,9 @@ def train():
     # torch.save(dvbf, 'dvbf.th')
     print("Model Trained")
 
-
+'''
 def generate(filename):
+
     fig = plt.figure()
     ax = fig.add_subplot(projection='3d')
     # plt.show()
@@ -130,25 +136,32 @@ def generate(filename):
     plt.show()
 
 '''
+
+
 def generate(filename):
-    dvbf = torch.load('checkpoints/dvbf.th').to('cpu')
+    dvbf = torch.load('checkpoints/dvbf_I.th').to('cpu')
+    checkpoint_path = 'pendulum_exp_2_vae/checkpt-0000.pth'
+    checkpt = torch.load(checkpoint_path)
+    state_dict = checkpt['state_dict']
+    dvbf.vae.load_state_dict(state_dict, strict=False)
+
     dataset = load_data('datasets/pendulum/training_n.npz')
-    x = dataset[0][0].unsqueeze(dim=0)
-    u = dataset[0][1].unsqueeze(dim=0)
+    x = dataset[0:2][0]
+    u = dataset[0:2][1]
     T = u.shape[1]
-    z, _ = dvbf.filter(x=x[:1], u=u)
-    reconstructed = dvbf.reconstruct(z).view(1, T, -1)
+    z, _ = dvbf.filter(x=x, u=u)
+    reconstructed = dvbf.reconstruct(z).view(2, T, -1)
 
     def format(x):
         img = torch.clip(x * 255., 0, 255).to(torch.uint8)
-        return img.view(-1, 16, 16).numpy()
+        return img.view(16, 16).numpy()
 
     frames = []
 
     for i in range(T):
 
-        gt = format(x[:, i])
-        pred = format(reconstructed[:, i])
+        gt = format(x[0, i])
+        pred = format(reconstructed[0, i])
         img = np.concatenate([gt, pred], axis=1).squeeze()
         # cv2.imshow(mat=img, winname='generated')
         # cv2.waitKey(5)
@@ -156,11 +169,10 @@ def generate(filename):
         # plt.show()
         frames.append(img)
 
-
     with imageio.get_writer(f"{filename}.mp4", mode="I") as writer:
         for idx, frame in enumerate(frames):
             writer.append_data(frame)
-'''
+
 
 if __name__ == '__main__':
     # collect_data(5, 15)
