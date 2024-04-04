@@ -13,14 +13,12 @@ for i in range(0, 15):
 
 plt.show()
 '''
-dim_z = 5
+
 dim_x = (32, 32)
 dim_u = 1
-dim_a = 16
-dim_w = 3
+dim_p = 3
+dim_s = 2
 batch_size = 1
-num_iterations = int(5000)
-learning_rate = 0.01
 
 
 def load_data(file: str, device='cpu') -> Dataset:
@@ -44,6 +42,5 @@ train_loader = DataLoader(datasets['training_params'], batch_size=batch_size, sh
 i = 0
 for batch in train_loader:
     x, u, s, p = batch[0], batch[1], batch[2], batch[3]
-    print(u.shape)
     print(i)
     i += 1
