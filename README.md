@@ -1,7 +1,10 @@
-Visuo-Tactile Cross Modall prediction
+VT Cross Modal Perception Project
 
-Baseline - Deep Bayes Variational filter
+Current Project - Pendulum with varying length, mass and joint friction
 
-1) Generate dataset - 1000 trajectories for training and 250 trajectories for validation_mod
-2) Run train_dbvf.py with correct dataset path
-3) Post training check some test examples and analyse
+1) First step is to train a VAE which should learn to capture the visual cues - position (theta) of the pendulum and the length of the pendulum.
+
+2) Second step is to train a latent filter DBVF to learn the dynamics of the pendulum, while using the learnt static VAE
+
+Before running the scripts, ensure the folder structures are correct - datasets, results, dump
+

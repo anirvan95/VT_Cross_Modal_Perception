@@ -1,3 +1,9 @@
+"""
+Created on Sun Mar 31 17:24:44 2024
+
+@author: simon
+"""
+
 import os
 import time
 import math
@@ -15,12 +21,12 @@ np.random.seed(0)
 import random
 random.seed(0)
 from tqdm import tqdm
-import tcvae_utils.dist as dist
-import tcvae_utils.utils as utils
-import tcvae_utils.datasets as dset
-from tcvae_utils.flows import FactorialNormalizingFlow
-from tcvae_utils.compute_metric import elbo_decomposition_pendulum, mutual_info_metric_pendulum    # Compute after training
-from tcvae_utils.plot_latent import plot_latent_vs_gt_pendulum, display_samples, plot_elbo
+import utils.dist as dist
+import utils.utils as utils
+import utils.vae_datasets as dset
+from utils.flows import FactorialNormalizingFlow
+from utils.compute_metric import elbo_decomposition_pendulum, mutual_info_metric_pendulum    # Compute after training
+from utils.plot_latent import plot_latent_vs_gt_pendulum, display_samples, plot_elbo
 
 
 class MLPEncoder(nn.Module):
@@ -40,7 +46,7 @@ class MLPEncoder(nn.Module):
         h = x.view(-1, 32 * 32)
         h = self.act(self.fc1(h))
         h = self.act(self.fc2(h))
-        h = self.fc3(h)
+        h = self.act(self.fc3(h))
         h = self.fc4(h)
         z = h.view(x.size(0), self.output_dim)
         return z
@@ -67,11 +73,11 @@ class MLPDecoder(nn.Module):
 
 
 class VAE(nn.Module):
-    def __init__(self, z_dim, use_cuda=False, prior_dist=dist.Normal(), q_dist=dist.Normal(), include_mutinfo=True, tcvae=True, mss=False):
+    def __init__(self, dim_z, use_cuda=False, prior_dist=dist.Normal(), q_dist=dist.Normal(), include_mutinfo=True, tcvae=True, mss=False):
         super(VAE, self).__init__()
 
         self.use_cuda = use_cuda
-        self.z_dim = z_dim
+        self.dim_z = dim_z
         self.include_mutinfo = include_mutinfo
         self.tcvae = tcvae
         self.lamb = 0
@@ -84,10 +90,10 @@ class VAE(nn.Module):
         self.prior_dist = prior_dist
         self.q_dist = q_dist
         # hyperparameters for prior p(z)
-        self.register_buffer('prior_params', torch.zeros(self.z_dim, 2))
+        self.register_buffer('prior_params', torch.zeros(self.dim_z, 2))
 
-        self.encoder = MLPEncoder(z_dim * self.q_dist.nparams)
-        self.decoder = MLPDecoder(z_dim)
+        self.encoder = MLPEncoder(dim_z * self.q_dist.nparams)
+        self.decoder = MLPDecoder(dim_z)
 
         if use_cuda:
             # calling cuda() here will put all the parameters of
@@ -95,7 +101,7 @@ class VAE(nn.Module):
             self.cuda()
 
     # return prior parameters wrapped in a suitable Variable
-    def _get_prior_params(self, batch_size=1):
+    def get_prior_params(self, batch_size=1):
         expanded_size = (batch_size,) + self.prior_params.size()
         prior_params = Variable(self.prior_params.expand(expanded_size))
         return prior_params
@@ -103,7 +109,7 @@ class VAE(nn.Module):
     # samples from the model p(x|z)p(z)
     def model_sample(self, batch_size=1):
         # sample from prior (value will be sampled by guide when computing the ELBO)
-        prior_params = self._get_prior_params(batch_size)
+        prior_params = self.get_prior_params(batch_size)
         zs = self.prior_dist.sample(params=prior_params)
         # decode the latent code z
         x_params = self.decoder.forward(zs)
@@ -113,7 +119,7 @@ class VAE(nn.Module):
     def encode(self, x):
         x = x.view(x.size(0), 1, 32, 32)
         # use the encoder to get the parameters used to define q(z|x)
-        z_params = self.encoder.forward(x).view(x.size(0), self.z_dim, self.q_dist.nparams)
+        z_params = self.encoder.forward(x).view(x.size(0), self.dim_z, self.q_dist.nparams)
         # sample the latent code z
         zs = self.q_dist.sample(params=z_params)
         return zs, z_params
@@ -133,7 +139,7 @@ class VAE(nn.Module):
         # log p(x|z) + log p(z) - log q(z|x)
         batch_size = x.size(0)
         x = x.view(batch_size, 1, 32, 32)
-        prior_params = self._get_prior_params(batch_size)
+        prior_params = self.get_prior_params(batch_size)
         x_recon, x_params, zs, z_params = self.reconstruct_img(x)
         logpx = self.x_dist.log_density(x, params=x_params).view(batch_size, -1).sum(1)
         logpz = self.prior_dist.log_density(zs, params=prior_params).view(batch_size, -1).sum(1)
@@ -146,8 +152,8 @@ class VAE(nn.Module):
 
         # compute log q(z) ~= log 1/(NM) sum_m=1^M q(z|x_m) = - log(MN) + logsumexp_m(q(z|x_m))
         _logqz = self.q_dist.log_density(
-            zs.view(batch_size, 1, self.z_dim),
-            z_params.view(1, batch_size, self.z_dim, self.q_dist.nparams)
+            zs.view(batch_size, 1, self.dim_z),
+            z_params.view(1, batch_size, self.dim_z, self.q_dist.nparams)
         )
 
         if not self.mss:
@@ -234,7 +240,7 @@ def main():
     # parse command line arguments
     parser = argparse.ArgumentParser(description="parse args")
     parser.add_argument('-dist', default='normal', type=str, choices=['normal', 'laplace', 'flow'])
-    parser.add_argument('-n', '--num-epochs', default=50, type=int, help='number of training epochs')
+    parser.add_argument('-n', '--num-epochs', default=25, type=int, help='number of training epochs')
     parser.add_argument('-b', '--batch-size', default=7000, type=int, help='batch size')
     parser.add_argument('-l', '--learning-rate', default=1e-3, type=float, help='learning rate')
     parser.add_argument('-z', '--latent-dim', default=3, type=int, help='size of latent dimension')
@@ -247,7 +253,7 @@ def main():
     parser.add_argument('--mss', default=True, type=bool, help='Use Minibatch Stratified Sampling')
     parser.add_argument('--gpu', type=int, default=0)
     parser.add_argument('--visdom', default=True, type=bool, help='Use Visdom for real time plotting, makes it slower')
-    parser.add_argument('--save', default='results/pendulum/train_04_03')   # Important configuration, else will overwrite TODO do it automatically
+    parser.add_argument('--save', default='results/pendulum/tcvae_train/train_05_03')   # Important configuration, else will overwrite TODO do it automatically
     parser.add_argument('--log_freq', default=200, type=int, help='num iterations per log')
     args = parser.parse_args()
 
@@ -270,7 +276,7 @@ def main():
         prior_dist = FactorialNormalizingFlow(dim=args.latent_dim, nsteps=32)
         q_dist = dist.Normal()
 
-    vae = VAE(z_dim=args.latent_dim, use_cuda=args.use_cuda, prior_dist=prior_dist, q_dist=q_dist, include_mutinfo=not args.exclude_mutinfo, tcvae=args.tcvae, mss=args.mss)
+    vae = VAE(dim_z=args.latent_dim, use_cuda=args.use_cuda, prior_dist=prior_dist, q_dist=q_dist, include_mutinfo=not args.exclude_mutinfo, tcvae=args.tcvae, mss=args.mss)
 
     # setup the optimizer
     optimizer = optim.Adam(vae.parameters(), lr=args.learning_rate)
@@ -290,7 +296,6 @@ def main():
     while iteration < num_iterations:
         for i, values in enumerate(train_loader):
             obs, state, parameter = values
-            iteration += 1
             batch_time = time.time()
             vae.train()
             anneal_kl(args, vae, iteration)
@@ -326,8 +331,9 @@ def main():
                 utils.save_checkpoint({
                     'state_dict': vae.state_dict(),
                     'args': args}, args.save, 0)
-                plot_latent_vs_gt_pendulum(vae, dset.Pendulum(), os.path.join(args.save, 'gt_vs_latent_{:05d}.png'.format(iteration)))
+                # plot_latent_vs_gt_pendulum(vae, dset.Pendulum(), os.path.join(args.save, 'gt_vs_latent_{:05d}.png'.format(iteration)))
 
+            iteration += 1
 
     # Report statistics after training
     vae.eval()
@@ -346,7 +352,7 @@ def main():
         'joint_entropy': joint_entropy
     }, os.path.join(args.save, 'elbo_decomposition.pth'))
     '''
-    TODO
+    TODO implement improved MIG 
     metric, marginal_entropies, cond_entropies = mutual_info_metric_pendulum(vae, dset.Pendulum())
     torch.save({
         'metric': metric,
@@ -354,6 +360,7 @@ def main():
         'cond_entropies': cond_entropies},
         os.path.join(args.save, 'disentanglement_computation.pth'))
     '''
+
 
 if __name__ == '__main__':
     model = main()

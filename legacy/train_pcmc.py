@@ -16,6 +16,12 @@ from gym.wrappers.pixel_observation import PixelObservationWrapper
 import matplotlib.cm as cm
 from model_PCMC import DVBF
 from wrapper import PixelDictWrapper, PendulumEnv
+import imageio
+import numpy as np
+import torch
+# from torch.utils.tensorboard import SummaryWriter
+from torch.utils.data import TensorDataset, DataLoader, Dataset
+from models.pcmc_model import PCMC
 
 dim_z = 3
 dim_x = (16, 16)
@@ -40,6 +46,7 @@ def load_data(file: str, device='cpu') -> Dataset:
 def train():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     writer = SummaryWriter()
+    # writer = SummaryWriter()
     datasets = dict((k, load_data(file=f'datasets/pendulum/{k}.npz', device=device)) for k in ['training_n'])
 
     train_loader = DataLoader(datasets['training_n'], batch_size=batch_size, shuffle=True)
@@ -54,17 +61,27 @@ def train():
 
     # optimizer = torch.optim.Adam(dvbf.parameters(), lr=learning_rate)
     optimizer = torch.optim.Adadelta(dvbf.parameters(), lr=learning_rate)
+    pcmc = PCMC(dim_x=16*16, dim_u=dim_u, dim_z=dim_z, dim_alpha=dim_alpha, dim_beta=dim_beta, batch_size=batch_size, device=device).to(device)
+    # pcmc = torch.load('pcmc.th').to(device)
+
+    # Freeze the VAE model
+    for param in pcmc.vae.parameters():
+        param.requires_grad = False
+
+    # optimizer = torch.optim.Adam(dvbf.parameters(), lr=learning_rate)
+    optimizer = torch.optim.Adadelta(pcmc.parameters(), lr=learning_rate)
     # scheduler = ExponentialLR(optimizer, gamma=0.9)
     T = num_iterations
     count = 0
     for i in range(num_iterations):
         total_loss = 0
         dvbf.train(True)
+        pcmc.train(True)
         count = 0
         for batch in train_loader:
             count += 1
             if i < 5:
-                dvbf.ci = 1e-2
+               dvbf.ci = 1e-2
             else:
                 count += 1
                 if i % 250 == 0:
@@ -73,11 +90,22 @@ def train():
             x, u = batch[0], batch[1]
             optimizer.zero_grad()
             loss = dvbf.loss(x, u)
+            '''
+            pcmc.ci = 1e-2
+            else:
+                count += 1
+                if i % 250 == 0:
+                    pcmc.ci = np.minimum(1, (1e-2 + count / T))
+            '''
+            x, u = batch[0], batch[1]
+            optimizer.zero_grad()
+            loss = pcmc.loss(x, u)
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
         # scheduler.step()
         writer.add_scalar('loss', scalar_value=total_loss, global_step=i)
+        # writer.add_scalar('loss', scalar_value=total_loss, global_step=i)
         print(f'[Epoch {i}] train_loss: {total_loss/count}')
         # writer.add_scalar('learning rate', scalar_value=scheduler.get_lr()[0], global_step=i)
         '''
@@ -92,6 +120,7 @@ def train():
         '''
         if i % 500 == 0:
             torch.save(dvbf, 'checkpoints/dvbf.th')
+            torch.save(pcmc, 'runs/pcmc/dvbf_exp_2.th')
             generate(filename=f'dvbf-epoch-{i}')
 
     # torch.save(dvbf, 'dvbf.th')
@@ -141,6 +170,9 @@ def generate(filename):
 def generate(filename):
     dvbf = torch.load('checkpoints/dvbf_I.th').to('cpu')
     checkpoint_path = 'pendulum_exp_2_vae/checkpt-0000.pth'
+    dvbf = torch.load('runs/pcmc/dvbf_exp_2.th').to('cpu')
+    dvbf.device = 'cpu'
+    checkpoint_path = 'runs/vae/pendulum_exp_2_vae/checkpt-0000.pth'
     checkpt = torch.load(checkpoint_path)
     state_dict = checkpt['state_dict']
     dvbf.vae.load_state_dict(state_dict, strict=False)
@@ -177,4 +209,6 @@ def generate(filename):
 if __name__ == '__main__':
     # collect_data(5, 15)
     # train()
-    generate(filename=f'dvbf-trial-1')
+    # generate(filename=f'dvbf-trial-1')
+    train()
+    # generate(filename=f'dvbf-trial-1')

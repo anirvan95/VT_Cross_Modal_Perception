@@ -1,239 +1,280 @@
-# -*- coding: utf-8 -*-
 """
-Created on Mon Nov 27 10:57:19 2023
+Created on Sun Mar 31 17:24:44 2024
 
 @author: simon
-
-To be updated - Anirvan
 """
-from typing import Tuple, Dict
+
 from train_pendulum_tcvae import VAE
 import torch
+torch.manual_seed(0)
 import torch.nn as nn
 import numpy as np
-import lib.dist as dist
+import utils.dist as dist
+from torch.utils.data import DataLoader
+import utils.filter_datasets as dataset
+import utils.utils as utils
+import argparse
+import torch.optim as optim
+import time
+import imageio
 
 
-class ConvEncoder(nn.Module):
-    def __init__(self, output_dim):
-        super(ConvEncoder, self).__init__()
+class LSTMEncode(nn.Module):
+    def __init__(self, input_size, hidden_size, output_size):
+        super(LSTMEncode, self).__init__()
+        self.hidden_size = hidden_size
+        self.lstm = nn.LSTM(input_size, hidden_size, batch_first=True)
+        self.fc = nn.Linear(hidden_size, output_size)
+
+    def forward(self, input, hidden=None):
+        output, hidden = self.lstm(input[:, None, :], hidden)
+        output = self.fc(output[:, -1, :])  # Take the last output
+        return output, hidden
+
+
+class MLPTransition(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super(MLPTransition, self).__init__()
         self.output_dim = output_dim
+        self.input_dim = input_dim
+        self.fc1 = nn.Linear(input_dim, 64)
+        self.fc2 = nn.Linear(64, 32)
+        self.fc3 = nn.Linear(32, output_dim)
 
-        self.conv1 = nn.Conv2d(1, 64, 4, 2, 1)  # 8 x 8
-        self.bn1 = nn.BatchNorm2d(64)
-        self.conv2 = nn.Conv2d(64, 64, 4, 2, 1)  # 4 x 4
-        self.bn2 = nn.BatchNorm2d(64)
-        self.conv3 = nn.Conv2d(64, 512, 4)  # 512, 1
-        self.bn3 = nn.BatchNorm2d(512)
-        self.conv_z = nn.Conv2d(512, output_dim, 1)
-
-        # setup the non-linearity
+        # Setup the non-linearity
         self.act = nn.ReLU(inplace=True)
 
     def forward(self, x):
-        h = x.view(-1, 1, 16, 16)
-        # h = self.act(self.bn1(self.conv1(h)))
-        # h = self.act(self.bn2(self.conv2(h)))
-        h = self.act(self.bn1(self.conv1(h)))
-        h = self.act(self.bn2(self.conv2(h)))
-        h = self.act(self.bn3(self.conv3(h)))
-        z = self.conv_z(h).view(x.size(0), self.output_dim)
+        h = self.act(self.fc1(x))
+        h = self.act(self.fc2(h))
+        h = self.fc3(h)
+        z = h.view(x.size(0), self.output_dim)
         return z
-
-
-class ConvDecoder(nn.Module):
-    def __init__(self, input_dim):
-        super(ConvDecoder, self).__init__()
-        self.conv1 = nn.ConvTranspose2d(input_dim, 512, 1, 1, 0)  # 1 x 1
-        self.bn1 = nn.BatchNorm2d(512)
-        self.conv2 = nn.ConvTranspose2d(512, 64, 4, 1, 0)  # 4 x 4
-        self.bn2 = nn.BatchNorm2d(64)
-        self.conv3 = nn.ConvTranspose2d(64, 32, 4, 2, 1)  # 8 x 8
-        self.bn3 = nn.BatchNorm2d(32)
-        # self.conv4 = nn.ConvTranspose2d(64, 32, 4, 2, 1)  # 16 x 16
-        # self.bn4 = nn.BatchNorm2d(32)
-        # self.conv5 = nn.ConvTranspose2d(32, 32, 4, 2, 1)  # 32 x 32
-        # self.bn5 = nn.BatchNorm2d(32)
-        self.conv_final = nn.ConvTranspose2d(32, 1, 4, 2, 1)
-
-        # setup the non-linearity
-        self.act = nn.ReLU(inplace=True)
-
-    def forward(self, z):
-        h = z.view(z.size(0), z.size(1), 1, 1)
-        h = self.act(self.bn1(self.conv1(h)))   # 512, 1
-        h = self.act(self.bn2(self.conv2(h)))
-        h = self.act(self.bn3(self.conv3(h)))
-        # h = self.act(self.bn4(self.conv4(h)))
-        # h = self.act(self.bn5(self.conv5(h)))
-        mu_img = self.conv_final(h)
-        return mu_img
 
 
 class DVBF(nn.Module):
-    def __init__(self, dim_x: Tuple, dim_u: int, dim_z: int, dim_alpha: int, dim_beta: int, batch_size: int, hidden_transition: int = 128, hidden_size=128):
+    def __init__(self, dim_z, dim_beta, use_cuda=False, load_vae=True):
         super(DVBF, self).__init__()
-        self.dim_x = np.prod(dim_x).item()
         self.dim_z = dim_z
-        self.dim_alpha = dim_alpha
-        self.dim_beta = 15    # Fixed due to prior training of the VAE
-        self.dim_u = dim_u
-        self.batch_size = batch_size
-        self.ci = 1.0
+        self.dim_beta = dim_beta
+        self.use_cuda = use_cuda
 
-        # Dynamic Network, ENCODE TRANSITION (from previous LS and action)
-        self.alpha_net = nn.Sequential(
-            nn.Linear(in_features=dim_z+dim_u, out_features=hidden_size),
-            nn.ReLU(),
-            nn.Linear(in_features=hidden_size, out_features=dim_alpha),
-            nn.ReLU(),
-            nn.Softmax()
-        )
-        # Add the VAE model here, load the params and freeze it
+        # distribution family of p(beta)
+        self.prior_dist_beta = dist.Normal()
+        self.q_dist_beta = dist.Normal()
+        # hyperparameters for prior p(z)
+        self.register_buffer('prior_params_beta', torch.zeros(self.dim_beta, 2))
 
-        prior_dist = dist.Normal()
-        q_dist = dist.Normal()
+        # Recognition Model  - Visual Encoder & Decoder
+        self.vae = VAE(dim_z, use_cuda=use_cuda)
 
-        self.vae = VAE(beta_dim=15, gamma_dim=15, use_cuda=False, prior_dist=prior_dist, q_dist=q_dist)
-        checkpoint_path = 'pendulum_exp_2_vae/checkpt-0000.pth'
-        checkpt = torch.load(checkpoint_path)
-        state_dict = checkpt['state_dict']
-        self.vae.load_state_dict(state_dict, strict=False)
+        if load_vae:
+            # TODO: improve checkpoint loading
+            checkpoint_path = 'results/pendulum/tcvae_train/train_05_03/checkpt-0000.pth'
+            checkpt = torch.load(checkpoint_path)
+            state_dict = checkpt['state_dict']
+            self.vae.load_state_dict(state_dict, strict=False)
+            print('VAE loaded successfully')
+            # TODO: should we add freezing of the VAE or not
 
-        # Recognition Model, ENCODER
-        self.beta_net = ConvEncoder(self.dim_beta * 2)
-        
-        # Transition Network, COMPUTE TRANSITION (from alpha (dynamic properties) and beta (time-invariant properties))
-        self.transition_net = nn.Sequential(
-            nn.Linear(in_features=dim_alpha+dim_beta, out_features=hidden_transition),
-            nn.ReLU(),
-            nn.Linear(in_features=hidden_transition, out_features=dim_z),
-            nn.ReLU(),
-            nn.Softmax()
-        )
-        
-        # Reconstruction Model, DECODER
-        self.observation_model = ConvDecoder(self.dim_z)
+        # Recognition Model - Hidden States LSTM Network to identify hidden properties from changing state space z
+        self.beta_net = LSTMEncode(input_size=dim_z, hidden_size=32, output_size=dim_beta*self.q_dist_beta.nparams)
 
-    def generate_samples(self, mu, logvar):
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(logvar)
-        return mu + eps * std
+        # Transition Network, computes TRANSITION (from previous visual state z, inferred beta (time-invariant properties) and action)
+        self.transition_net = MLPTransition(input_dim=dim_z+dim_beta+1, output_dim=dim_z)
 
-    def get_initial_samples(self, x):
-        x_initial = x[:, 0, :]
-        # print(x_initial.shape)
-        x_initial = x_initial.view(x.shape[0], 1, 16, 16)
-        betas_prior, beta_params_prior = self.vae.encode(x_initial)
-        mu_beta_prior = beta_params_prior[:, :, 0]
-        logvar_beta_prior = beta_params_prior[:, :, 1]
-        alphas = torch.zeros((x.shape[0], self.dim_alpha)).to('cpu')
-        betas_prior = self.generate_samples(mu_beta_prior, logvar_beta_prior)
-        z_t = self.encode_transition(alphas, betas_prior)
-        return mu_beta_prior, logvar_beta_prior, z_t, betas_prior
+        if use_cuda:
+            # calling cuda() here will put all the parameters of
+            # the encoder and decoder networks into gpu memory
+            self.cuda()
 
-    def encode_dynamic(self, z_t, u_t):
-        alpha = self.alpha_net(torch.cat([z_t, u_t], dim=-1))
-        return alpha
+    def get_prior_params_beta(self, batch_size=1):
+        expanded_size = (batch_size,) + self.prior_params_beta.size()
+        prior_params_beta = self.prior_params_beta.expand(expanded_size)
+        return prior_params_beta
 
-    def encode_transition(self, alpha, beta):
-        z = self.transition_net(torch.cat([alpha, beta], dim=-1))
-        return z
+    # TODO: Add model sample function to obtain the latent space analysis
 
-    def sample_beta(self, x_t=None):
-        if x_t is not None:
-            # data = torch.cat([x_t], dim=1)
-            beta_params = self.beta_net(x_t)
-            mu_beta, logvar_beta = torch.split(beta_params, split_size_or_sections=self.dim_beta, dim=1)
-        else:
-            mu_beta = torch.zeros((self.batch_size, self.dim_beta)).to('cpu')
-            logvar_beta = torch.ones((self.batch_size, self.dim_beta)).to('cpu')
-        return mu_beta, logvar_beta
+    def filter(self, x, u):
+        batch_size, T, _ = u.shape
 
-    def filter(self, x: torch.Tensor, u: torch.Tensor):
-        num_obs = x.shape[1]
-        N, T, _ = u.shape
-        mu_beta_prior, logvar_beta_prior, z_t, betas_prior = self.get_initial_samples(x)
-        z = [z_t]
-        betas = [betas_prior]
-        beta_means = [mu_beta_prior]
-        beta_vars = [logvar_beta_prior]
-        betas_prior = [betas_prior]
-        betas_prior_means = [mu_beta_prior]
-        beta_prior_vars = [logvar_beta_prior]
+        # Set the hidden layer of the LSTM to zero
+        hidden_beta_t = (torch.zeros(1, batch_size, 32, device='cuda'),
+                  torch.zeros(1, batch_size, 32, device='cuda'))
 
-        for t in range(1, T):
-            u_t = u[:, t - 1]
-            if t < num_obs:
-                z_t, mu_beta_t, logvar_beta_t, beta_t = self.forward(z=z_t, u=u_t, x=x[:, t], return_q=True)
-                betas_priot_t, beta_prior_params_t = self.vae.encode(x[:, t])
-                # Pass the observation to prior beta distribution
-                mu_beta_prior_t = beta_prior_params_t[:, :, 0]
-                logvar_beta_prior_t = beta_prior_params_t[:, :, 1]
-            else:
-                z_t, mu_beta_t, logvar_beta_t, beta_t = self.forward(z=z_t, u=u_t, return_q=True)
-                betas_priot_t, beta_prior_params_t = self.vae.encode(x[:, t])
-                mu_beta_prior_t = beta_prior_params_t[:, :, 0]
-                logvar_beta_prior_t = beta_prior_params_t[:, :, 1]
+        # Define the variables to store the filtering output
+        prior_params_beta_f = []
+        beta_params_f = []
+        betas_f = []
+        prior_params_z_f = []
+        z_params_f = []
+        zs_f = []
+        x_hat_params_f = []
+        xs_hat_f = []
+        x_f = []
 
-            z.append(z_t)
-            betas.append(beta_t)
-            beta_means.append(mu_beta_t)
-            beta_vars.append(logvar_beta_t)
+        for t in range(0, T-1):
+            u_t = u[:, t]
+            x_t = x[:, t]
+            prior_params_beta_t = self.get_prior_params_beta(batch_size)
+            prior_params_z_t = self.vae.get_prior_params(batch_size)
 
-            betas_prior.append(betas_priot_t)
-            betas_prior_means.append(mu_beta_prior_t)
-            beta_prior_vars.append(logvar_beta_prior_t)
+            # Obtain the visual encoding
+            zs_t, z_params_t = self.vae.encode(x_t)
+            # Obtain the betas - time-invariant properties and hidden
+            beta_params_t, hidden_beta_t = self.beta_net.forward(zs_t, hidden_beta_t)
+            beta_params_t = beta_params_t.view(batch_size, self.dim_beta, self.q_dist_beta.nparams)
+            # sample the latent code beta
+            betas_t = self.q_dist_beta.sample(params=beta_params_t)
 
-        z = torch.stack(z, dim=1)
-        beta_means = torch.stack(beta_means, dim=1)
-        beta_vars = torch.stack(beta_vars, dim=1)
-        betas = torch.stack(betas, dim=1)
+            # Obtain the next step z's
+            zs_t_1 = self.transition_net.forward(torch.cat([zs_t, u_t, betas_t], dim=-1))
 
-        beta_prior_means = torch.stack(betas_prior_means, dim=1)
-        beta_prior_vars = torch.stack(beta_prior_vars, dim=1)
-        betas_prior = torch.stack(betas_prior, dim=1)
+            # Pass through the decoder
+            xs_hat_t_1, x_hat_params_t_1 = self.vae.decode(zs_t_1)
 
-        return z, dict(beta_means=beta_means, beta_vars=beta_vars, betas=betas, beta_prior_means=beta_prior_means, beta_prior_vars=beta_prior_vars, betas_prior=betas_prior)
+            prior_params_beta_f.append(prior_params_beta_t)
+            beta_params_f.append(beta_params_t)
+            betas_f.append(betas_t)
 
-    def forward(self, z: torch.Tensor, u: torch.Tensor, x: torch.Tensor = None, return_q=False):
-        alpha = self.encode_dynamic(z, u)
-        mu_beta, logvar_beta = self.sample_beta(x)
-        beta = self.generate_samples(mu_beta, logvar_beta)
-        z = self.encode_transition(alpha, beta)
-        if return_q:
-            return z, mu_beta, logvar_beta, beta
-        else:
-            return z
+            prior_params_z_f.append(prior_params_z_t)
+            z_params_f.append(z_params_t)
+            zs_f.append(zs_t)
 
-    '''
-    def reconstruct(self, z: torch.Tensor):
-        x_rec_mean = self.observation_model(z).view(-1, self.dim_x)
-        return x_rec_mean
-    '''
+            xs_hat_f.append(xs_hat_t_1)
+            x_hat_params_f.append(x_hat_params_t_1)
+            x_f.append(x[:, t+1])
 
-    def reconstruct(self, z: torch.Tensor, return_dist=False):
-        x_rec_mean = self.observation_model(z.view(-1, self.dim_z))
-        x_rec_mean = x_rec_mean.view(x_rec_mean.shape[0], -1)
-        if return_dist:
-            p_x = torch.distributions.MultivariateNormal(x_rec_mean, covariance_matrix=torch.eye(self.dim_x).to(x_rec_mean))
-            return p_x, x_rec_mean
-        else:
-            return x_rec_mean
+        return prior_params_beta_f, beta_params_f, betas_f, prior_params_z_f, z_params_f, zs_f, xs_hat_f, x_hat_params_f, x_f
 
     def loss(self, x, u):
-        z, info = self.filter(x, u)
-        beta_means, beta_logvars, betas, beta_prior_means, beta_prior_logvars, betas_prior = info['beta_means'], info['beta_vars'], info['betas'], info['beta_prior_means'], info['beta_prior_vars'], info['betas_prior']
-        x_hat = self.reconstruct(z)
-        # p_x, x_hat = self.reconstruct(z, return_dist=True)
-        # logprob_x = p_x.log_prob(x.view(-1, self.dim_x))
+        batch_size, T, _ = u.shape
+        prior_params_beta_f, beta_params_f, betas_f, prior_params_z_f, z_params_f, zs_f, xs_hat_f, x_hat_params_f, x_f = self.filter(x, u)
+        prior_params_beta = torch.stack(prior_params_beta_f, dim=1).view(batch_size*(T-1), self.dim_beta, 2)
+        beta_params = torch.stack(beta_params_f, dim=1).view(batch_size*(T-1), self.dim_beta, 2)
+        betas = torch.stack(betas_f, dim=1).view(batch_size*(T-1), self.dim_beta)
+        prior_params_z = torch.stack(prior_params_z_f, dim=1).view(batch_size*(T-1), self.dim_z, 2)
+        z_params = torch.stack(z_params_f, dim=1).view(batch_size*(T-1), self.dim_z, 2) # TODO : generalize here
+        zs = torch.stack(zs_f, dim=1).view(batch_size*(T-1), self.dim_z)
+        x_recon = torch.stack(xs_hat_f, dim=1)
+        x_recon_params = torch.stack(x_hat_params_f, dim=1).view(batch_size*(T-1), 32, 32)
+        x_t_1 = torch.stack(x_f, dim=1).view(batch_size*(T-1), 32, 32)
 
-        # Reconstruction Error Loss
-        rec_loss = torch.nn.functional.mse_loss(x_hat, x.view(-1, self.dim_x))
-        beta_mean, beta_logvars = beta_means.view(-1, self.dim_beta), beta_logvars.view(-1, self.dim_beta)
-        beta_prior_means, beta_prior_logvars = beta_prior_means.view(-1, self.dim_beta), beta_prior_logvars.view(-1, self.dim_beta)
-        kl_loss = 0.5 * torch.mean(((beta_mean-beta_prior_means).pow(2) + beta_logvars.exp())/beta_prior_logvars.exp() - beta_logvars + beta_prior_logvars - 1)
+        logpx = self.vae.x_dist.log_density(x_t_1, params=x_recon_params).view(batch_size, -1).sum(1)
+        logpz = self.vae.prior_dist.log_density(zs, params=prior_params_z).view(batch_size, -1).sum(1)
+        logqz_condx = self.vae.q_dist.log_density(zs, params=z_params).view(batch_size, -1).sum(1)
 
-        loss = (rec_loss + kl_loss)*100
+        logpbeta = self.prior_dist_beta.log_density(betas, params=prior_params_beta).view(batch_size, -1).sum(1)
+        logqbeta_condx = self.q_dist_beta.log_density(betas, params=beta_params).view(batch_size, -1).sum(1)
 
-        return loss
+        elbo = logpx + logpz - logqz_condx + logpbeta - logqbeta_condx
+
+        return x_recon, elbo, elbo.detach()
+
+
+def format(x):
+    img = torch.clip(x * 255., 0, 255).to(torch.uint8)
+    return img.view(-1, 32, 32).numpy()
+
+
+def display_samples(x, x_recon, filename):
+    T = 14
+    frames = []
+    for i in range(T):
+        gt = format(x[i])
+        pred = format(x_recon[i])
+        img = np.concatenate([gt, pred], axis=1).squeeze()
+        # cv2.imshow(mat=img, winname='generated')
+        # cv2.waitKey(5)
+        # plt.imshow(img)
+        # plt.show()
+        frames.append(img)
+
+    with imageio.get_writer(f"{filename}.mp4", mode="I") as writer:
+        for idx, frame in enumerate(frames):
+            writer.append_data(frame)
+
+
+def main():
+    # parse command line arguments
+    parser = argparse.ArgumentParser(description="parse args")
+    parser.add_argument('-dist', default='normal', type=str, choices=['normal', 'laplace', 'flow'])
+    parser.add_argument('-n', '--num-epochs', default=100, type=int, help='number of training epochs')
+    parser.add_argument('-b', '--batch-size', default=4000, type=int, help='batch size')
+    parser.add_argument('-l', '--learning-rate', default=1e-3, type=float, help='learning rate')
+    parser.add_argument('-z', '--latent-dim', default=3, type=int, help='size of latent dimension')
+    parser.add_argument('--beta', default=1, type=float, help='ELBO penalty term')
+    parser.add_argument('--tcvae', default=True, type=bool, help='Use TC VAE')
+    parser.add_argument('--exclude-mutinfo', default=False, type=bool, help='Use Mutual Information term or not')
+    parser.add_argument('--beta-anneal', default=True, type=bool, help='Use annealing of beta hyperparameter')
+    parser.add_argument('--lambda-anneal', default=True, type=bool, help='Use annealing of lambda hyperparameter')
+    parser.add_argument('--use_cuda', default=True, type=bool, help='Use cuda or not, set False for CPU testing')
+    parser.add_argument('--mss', default=True, type=bool, help='Use Minibatch Stratified Sampling')
+    parser.add_argument('--gpu', type=int, default=0)
+    parser.add_argument('--visdom', default=True, type=bool, help='Use Visdom for real time plotting, makes it slower')
+    parser.add_argument('--save', default='results/pendulum/dbvf_train/train_05_03')   # Important configuration, else will overwrite TODO do it automatically
+    parser.add_argument('--log_freq', default=100, type=int, help='num iterations per log')
+    args = parser.parse_args()
+
+    if args.use_cuda:
+        torch.cuda.set_device(args.gpu)
+
+    # data loader
+    kwargs = {'num_workers': 4, 'pin_memory': args.use_cuda}
+    # train_loader = DataLoader(dataset=dset.Pendulum(), batch_size=args.batch_size, shuffle=True, **kwargs)
+    train_loader = DataLoader(dataset=dataset.Pendulum(), batch_size=args.batch_size, shuffle=True) # for debug uncomment this version
+
+    dbvf = DVBF(dim_z=3, dim_beta=2, use_cuda=args.use_cuda)
+
+    # setup the optimizer
+    optimizer = optim.Adam(dbvf.parameters(), lr=args.learning_rate)
+    train_elbo = []
+
+    # training loop
+    num_iterations = len(train_loader) * args.num_epochs
+    iteration = 0
+    elbo_running_mean = utils.RunningAverageMeter()
+
+    while iteration < num_iterations:
+        for i, values in enumerate(train_loader):
+            obs, state, parameter, action = values
+            batch_time = time.time()
+            dbvf.train()
+            optimizer.zero_grad()
+            # transfer to GPU
+            if args.use_cuda:
+                x = obs.cuda()
+                u = action.cuda()
+            else:
+                x = obs
+                u = action
+
+            # do ELBO gradient and accumulate loss
+            reconstruced, obj, elbo = dbvf.loss(x, u)
+            if utils.isnan(obj).any():
+                raise ValueError('NaN spotted in objective.')
+
+            obj.mean().mul(-1).backward()
+            elbo_running_mean.update(elbo.mean().item())
+            optimizer.step()
+
+            # report training diagnostics
+            if iteration % args.log_freq == 0:
+                train_elbo.append(elbo_running_mean.avg)
+                print('[iteration %03d] time: %.2f training ELBO: %.4f (%.4f)' % (
+                    iteration, time.time() - batch_time,
+                    elbo_running_mean.val, elbo_running_mean.avg))
+
+                dbvf.eval()
+
+                utils.save_checkpoint({
+                    'state_dict': dbvf.state_dict(),
+                    'args': args}, args.save, 0)
+
+                display_samples(x[0, :, :].cpu(), reconstruced[0, :, :].cpu(), f'dump/dvbf-epoch-{iteration}')
+
+            iteration += 1
+
+
+if __name__ == '__main__':
+    model = main()
