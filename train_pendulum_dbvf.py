@@ -1,18 +1,12 @@
-"""
-Created on Sun Mar 31 17:24:44 2024
-
-@author: simon
-"""
-
 from train_pendulum_tcvae import VAE
 import torch
 torch.manual_seed(0)
 import torch.nn as nn
 import numpy as np
-import utils.dist as dist
+import dbvf_utils.dist as dist
 from torch.utils.data import DataLoader
-import utils.filter_datasets as dataset
-import utils.utils as utils
+import dbvf_utils.datasets as dataset
+import tcvae_utils.utils as utils
 import argparse
 import torch.optim as optim
 import time
@@ -39,7 +33,8 @@ class MLPTransition(nn.Module):
         self.input_dim = input_dim
         self.fc1 = nn.Linear(input_dim, 64)
         self.fc2 = nn.Linear(64, 32)
-        self.fc3 = nn.Linear(32, output_dim)
+        self.fc3 = nn.Linear(32, 16)
+        self.fc4 = nn.Linear(16, output_dim)
 
         # Setup the non-linearity
         self.act = nn.ReLU(inplace=True)
@@ -47,18 +42,19 @@ class MLPTransition(nn.Module):
     def forward(self, x):
         h = self.act(self.fc1(x))
         h = self.act(self.fc2(h))
-        h = self.fc3(h)
+        h = self.act(self.fc3(h))
+        h = self.fc4(h)
         z = h.view(x.size(0), self.output_dim)
         return z
 
 
 class DVBF(nn.Module):
-    def __init__(self, dim_z, dim_beta, use_cuda=False, load_vae=True):
+    def __init__(self, dim_z, dim_beta, use_cuda=False, load_vae=False, freeze_vae=False):
         super(DVBF, self).__init__()
         self.dim_z = dim_z
         self.dim_beta = dim_beta
         self.use_cuda = use_cuda
-
+        self.dt = 0.05
         # distribution family of p(beta)
         self.prior_dist_beta = dist.Normal()
         self.q_dist_beta = dist.Normal()
@@ -69,17 +65,18 @@ class DVBF(nn.Module):
         self.vae = VAE(dim_z, use_cuda=use_cuda)
 
         if load_vae:
-            # TODO: improve checkpoint loading
-            checkpoint_path = 'results/pendulum/tcvae_train/train_05_03/checkpt-0000.pth'
+            checkpoint_path = 'results/pendulum/tcvae_train/train_06_03/checkpt-0000.pth'
             checkpt = torch.load(checkpoint_path)
             state_dict = checkpt['state_dict']
             self.vae.load_state_dict(state_dict, strict=False)
             print('VAE loaded successfully')
-            # TODO: should we add freezing of the VAE or not
+            if freeze_vae:
+                for param in self.vae.parameters():
+                    param.requires_grad = False
 
         # Recognition Model - Hidden States LSTM Network to identify hidden properties from changing state space z
-        self.beta_net = LSTMEncode(input_size=dim_z, hidden_size=32, output_size=dim_beta*self.q_dist_beta.nparams)
-
+        self.beta_net = LSTMEncode(input_size=dim_z, hidden_size=50, output_size=dim_beta*self.q_dist_beta.nparams)
+        
         # Transition Network, computes TRANSITION (from previous visual state z, inferred beta (time-invariant properties) and action)
         self.transition_net = MLPTransition(input_dim=dim_z+dim_beta+1, output_dim=dim_z)
 
@@ -95,12 +92,12 @@ class DVBF(nn.Module):
 
     # TODO: Add model sample function to obtain the latent space analysis
 
-    def filter(self, x, u):
+    def filter(self, x, u, H):
         batch_size, T, _ = u.shape
 
         # Set the hidden layer of the LSTM to zero
-        hidden_beta_t = (torch.zeros(1, batch_size, 32, device='cuda'),
-                  torch.zeros(1, batch_size, 32, device='cuda'))
+        hidden_beta_t = (torch.zeros(1, batch_size, 50, device='cuda'),
+                  torch.zeros(1, batch_size, 50, device='cuda'))
 
         # Define the variables to store the filtering output
         prior_params_beta_f = []
@@ -115,7 +112,11 @@ class DVBF(nn.Module):
 
         for t in range(0, T-1):
             u_t = u[:, t]
-            x_t = x[:, t]
+            if t > int(T * H):
+                x_t = xs_hat_t_1 # inducing some future prediction aspect to improve dynamics learning
+            else:
+                x_t = x[:, t]
+
             prior_params_beta_t = self.get_prior_params_beta(batch_size)
             prior_params_z_t = self.vae.get_prior_params(batch_size)
 
@@ -128,7 +129,7 @@ class DVBF(nn.Module):
             betas_t = self.q_dist_beta.sample(params=beta_params_t)
 
             # Obtain the next step z's
-            zs_t_1 = self.transition_net.forward(torch.cat([zs_t, u_t, betas_t], dim=-1))
+            zs_t_1 = zs_t + self.transition_net.forward(torch.cat([zs_t, u_t, betas_t], dim=-1))*self.dt  # transition predicts the angular velocity
 
             # Pass through the decoder
             xs_hat_t_1, x_hat_params_t_1 = self.vae.decode(zs_t_1)
@@ -147,9 +148,9 @@ class DVBF(nn.Module):
 
         return prior_params_beta_f, beta_params_f, betas_f, prior_params_z_f, z_params_f, zs_f, xs_hat_f, x_hat_params_f, x_f
 
-    def loss(self, x, u):
+    def loss(self, x, u, H):
         batch_size, T, _ = u.shape
-        prior_params_beta_f, beta_params_f, betas_f, prior_params_z_f, z_params_f, zs_f, xs_hat_f, x_hat_params_f, x_f = self.filter(x, u)
+        prior_params_beta_f, beta_params_f, betas_f, prior_params_z_f, z_params_f, zs_f, xs_hat_f, x_hat_params_f, x_f = self.filter(x, u, H)
         prior_params_beta = torch.stack(prior_params_beta_f, dim=1).view(batch_size*(T-1), self.dim_beta, 2)
         beta_params = torch.stack(beta_params_f, dim=1).view(batch_size*(T-1), self.dim_beta, 2)
         betas = torch.stack(betas_f, dim=1).view(batch_size*(T-1), self.dim_beta)
@@ -167,7 +168,7 @@ class DVBF(nn.Module):
         logpbeta = self.prior_dist_beta.log_density(betas, params=prior_params_beta).view(batch_size, -1).sum(1)
         logqbeta_condx = self.q_dist_beta.log_density(betas, params=beta_params).view(batch_size, -1).sum(1)
 
-        elbo = logpx + logpz - logqz_condx + logpbeta - logqbeta_condx
+        elbo = logpx + (logpz - logqz_condx + logpbeta - logqbeta_condx)*0.5
 
         return x_recon, elbo, elbo.detach()
 
@@ -199,7 +200,7 @@ def main():
     # parse command line arguments
     parser = argparse.ArgumentParser(description="parse args")
     parser.add_argument('-dist', default='normal', type=str, choices=['normal', 'laplace', 'flow'])
-    parser.add_argument('-n', '--num-epochs', default=100, type=int, help='number of training epochs')
+    parser.add_argument('-n', '--num-epochs', default=1000, type=int, help='number of training epochs')
     parser.add_argument('-b', '--batch-size', default=4000, type=int, help='batch size')
     parser.add_argument('-l', '--learning-rate', default=1e-3, type=float, help='learning rate')
     parser.add_argument('-z', '--latent-dim', default=3, type=int, help='size of latent dimension')
@@ -212,7 +213,7 @@ def main():
     parser.add_argument('--mss', default=True, type=bool, help='Use Minibatch Stratified Sampling')
     parser.add_argument('--gpu', type=int, default=0)
     parser.add_argument('--visdom', default=True, type=bool, help='Use Visdom for real time plotting, makes it slower')
-    parser.add_argument('--save', default='results/pendulum/dbvf_train/train_05_03')   # Important configuration, else will overwrite TODO do it automatically
+    parser.add_argument('--save', default='results/pendulum/dbvf_train/train_08_03')   # Important configuration, else will overwrite TODO do it automatically
     parser.add_argument('--log_freq', default=100, type=int, help='num iterations per log')
     args = parser.parse_args()
 
@@ -220,11 +221,19 @@ def main():
         torch.cuda.set_device(args.gpu)
 
     # data loader
-    kwargs = {'num_workers': 4, 'pin_memory': args.use_cuda}
-    # train_loader = DataLoader(dataset=dset.Pendulum(), batch_size=args.batch_size, shuffle=True, **kwargs)
+    # kwargs = {'num_workers': 4, 'pin_memory': args.use_cuda}
+    # train_loader = DataLoader(dataset=dataset.Pendulum(), batch_size=args.batch_size, shuffle=True, **kwargs)
     train_loader = DataLoader(dataset=dataset.Pendulum(), batch_size=args.batch_size, shuffle=True) # for debug uncomment this version
 
-    dbvf = DVBF(dim_z=3, dim_beta=2, use_cuda=args.use_cuda)
+    dbvf = DVBF(dim_z=5, dim_beta=5, use_cuda=args.use_cuda)
+    load_dbvf = True
+    if load_dbvf:
+        # TODO: improve checkpoint loading
+        checkpoint_path = 'results/pendulum/dbvf_train/train_08_03/checkpt-0000.pth'
+        checkpt = torch.load(checkpoint_path)
+        state_dict = checkpt['state_dict']
+        dbvf.load_state_dict(state_dict, strict=False)
+        print('DBVF loaded successfully')
 
     # setup the optimizer
     optimizer = optim.Adam(dbvf.parameters(), lr=args.learning_rate)
@@ -232,9 +241,9 @@ def main():
 
     # training loop
     num_iterations = len(train_loader) * args.num_epochs
-    iteration = 0
+    iteration = 14700
     elbo_running_mean = utils.RunningAverageMeter()
-
+    H = 0.5 # critical hyperparameter
     while iteration < num_iterations:
         for i, values in enumerate(train_loader):
             obs, state, parameter, action = values
@@ -250,7 +259,7 @@ def main():
                 u = action
 
             # do ELBO gradient and accumulate loss
-            reconstruced, obj, elbo = dbvf.loss(x, u)
+            reconstruced, obj, elbo = dbvf.loss(x, u, H)
             if utils.isnan(obj).any():
                 raise ValueError('NaN spotted in objective.')
 
@@ -271,7 +280,7 @@ def main():
                     'state_dict': dbvf.state_dict(),
                     'args': args}, args.save, 0)
 
-                display_samples(x[0, :, :].cpu(), reconstruced[0, :, :].cpu(), f'dump/dvbf-epoch-{iteration}')
+                display_samples(x[0, :, :].cpu(), reconstruced[0, :, :].cpu(), f'dump/train/dvbf-iter-{iteration}')
 
             iteration += 1
 

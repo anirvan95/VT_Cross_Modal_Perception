@@ -1,9 +1,3 @@
-"""
-Created on Sun Mar 31 17:24:44 2024
-
-@author: simon
-"""
-
 import os
 import time
 import math
@@ -21,12 +15,12 @@ np.random.seed(0)
 import random
 random.seed(0)
 from tqdm import tqdm
-import utils.dist as dist
-import utils.utils as utils
-import utils.vae_datasets as dset
-from utils.flows import FactorialNormalizingFlow
-from utils.compute_metric import elbo_decomposition_pendulum, mutual_info_metric_pendulum    # Compute after training
-from utils.plot_latent import plot_latent_vs_gt_pendulum, display_samples, plot_elbo
+import tcvae_utils.dist as dist
+import tcvae_utils.utils as utils
+import tcvae_utils.datasets as dset
+from tcvae_utils.flows import FactorialNormalizingFlow
+from tcvae_utils.compute_metric import elbo_decomposition_pendulum, mutual_info_metric_pendulum    # Compute after training
+from tcvae_utils.plot_latent import plot_latent_vs_gt_pendulum, display_samples, plot_elbo
 
 
 class MLPEncoder(nn.Module):
@@ -241,9 +235,9 @@ def main():
     parser = argparse.ArgumentParser(description="parse args")
     parser.add_argument('-dist', default='normal', type=str, choices=['normal', 'laplace', 'flow'])
     parser.add_argument('-n', '--num-epochs', default=25, type=int, help='number of training epochs')
-    parser.add_argument('-b', '--batch-size', default=7000, type=int, help='batch size')
+    parser.add_argument('-b', '--batch-size', default=5000, type=int, help='batch size')
     parser.add_argument('-l', '--learning-rate', default=1e-3, type=float, help='learning rate')
-    parser.add_argument('-z', '--latent-dim', default=3, type=int, help='size of latent dimension')
+    parser.add_argument('-z', '--latent-dim', default=5, type=int, help='size of latent dimension')
     parser.add_argument('--beta', default=1, type=float, help='ELBO penalty term')
     parser.add_argument('--tcvae', default=True, type=bool, help='Use TC VAE')
     parser.add_argument('--exclude-mutinfo', default=False, type=bool, help='Use Mutual Information term or not')
@@ -253,7 +247,7 @@ def main():
     parser.add_argument('--mss', default=True, type=bool, help='Use Minibatch Stratified Sampling')
     parser.add_argument('--gpu', type=int, default=0)
     parser.add_argument('--visdom', default=True, type=bool, help='Use Visdom for real time plotting, makes it slower')
-    parser.add_argument('--save', default='results/pendulum/tcvae_train/train_05_03')   # Important configuration, else will overwrite TODO do it automatically
+    parser.add_argument('--save', default='results/pendulum/tcvae_train/train_06_03')   # Important configuration, else will overwrite TODO do it automatically
     parser.add_argument('--log_freq', default=200, type=int, help='num iterations per log')
     args = parser.parse_args()
 
