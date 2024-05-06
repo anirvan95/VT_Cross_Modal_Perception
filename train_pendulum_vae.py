@@ -215,11 +215,12 @@ def logsumexp(value, dim=None, keepdim=False):
 
 def anneal_kl(args, vae, iteration):
     # Annealing function for the beta and lamda terms
+
     warmup_iter = 2000
     if args.lambda_anneal:
         vae.lamb = max(0, 0.95 - 1 / warmup_iter * iteration)  # 1 --> 0
     else:
-        vae.lamb = 0
+        vae.lamb = args.lamb
     if args.beta_anneal:
         vae.beta = min(args.beta, args.beta / warmup_iter * iteration)  # 0 --> 1
     else:
@@ -235,7 +236,7 @@ def main():
     parser.add_argument('-l', '--learning-rate', default=5e-4, type=float, help='learning rate')
     parser.add_argument('-z', '--latent-dim', default=3, type=int, help='size of latent dimension')
     parser.add_argument('--beta', default=2, type=float, help='Total Correlation Scaling Factor')
-    parser.add_argument('--lambda', default=0, type=float, help='KL Scaling Factor')
+    parser.add_argument('--lamb', default=0, type=float, help='KL Scaling Factor')
     parser.add_argument('--disentanglement', default=True, type=bool, help='Use TC VAE (Disentanglement or Not)')
     parser.add_argument('--include-mutinfo', default=True, type=bool, help='Use Mutual Information term or not')
     parser.add_argument('--beta-anneal', default=False, type=bool, help='Use annealing of beta hyperparameter')
@@ -243,7 +244,7 @@ def main():
     parser.add_argument('--use_cuda', default=True, type=bool, help='Use cuda or not, set False for CPU testing')
     parser.add_argument('--gpu', type=int, default=0)
     parser.add_argument('--visdom', default=True, type=bool, help='Use Visdom for real time plotting, makes it slower')
-    parser.add_argument('--save', default='results/pendulum/tcvae_train')
+    parser.add_argument('--save', default='results/pendulum/vae_train')
     parser.add_argument('--log_freq', default=200, type=int, help='num iterations per log')
     args = parser.parse_args()
 
@@ -261,18 +262,7 @@ def main():
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
 
-    # setup the VAE
-    if args.dist == 'normal':
-        prior_dist = dist.Normal()
-        q_dist = dist.Normal()
-    elif args.dist == 'laplace':
-        prior_dist = dist.Laplace()
-        q_dist = dist.Laplace()
-    elif args.dist == 'flow':
-        prior_dist = FactorialNormalizingFlow(dim=args.latent_dim, nsteps=32)
-        q_dist = dist.Normal()
-
-    vae = VAE(dim_z=args.latent_dim, use_cuda=args.use_cuda, prior_dist=prior_dist, q_dist=q_dist, include_mutinfo=args.include_mutinfo, disentanglement=args.disentanglement)
+    vae = VAE(dim_z=args.latent_dim, use_cuda=args.use_cuda, include_mutinfo=args.include_mutinfo, disentanglement=args.disentanglement)
 
     # setup the optimizer
     optimizer = optim.Adam(vae.parameters(), lr=args.learning_rate)

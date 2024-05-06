@@ -14,7 +14,7 @@ import imageio
 import utils.dist as dist
 import utils.compute_utils as utils
 import utils.datasets as dset
-from utils.plot_latent import plot_latent_dvbf
+from utils.plot_latent import plot_latent_dvbf, display_video, plot_elbo
 
 # Seeding for reproducibility
 np.random.seed(0)
@@ -88,8 +88,9 @@ class DVBF(nn.Module):
         if load_vae:
             # By default, loads the latest checkpoint
             train_files = sorted(os.listdir(vae_file_path))
-            checkpoint_path = train_files[-1]
-            checkpt = torch.load(checkpoint_path)
+            checkpoint_paths = train_files[-1]
+            checkpoints = sorted(os.listdir(os.path.join(vae_file_path, checkpoint_paths)))
+            checkpt = torch.load(os.path.join(vae_file_path, checkpoint_paths, checkpoints[-1]))
             state_dict = checkpt['state_dict']
             self.vae.load_state_dict(state_dict, strict=False)
             print('VAE loaded successfully')
@@ -132,7 +133,7 @@ class DVBF(nn.Module):
         x_hat_params_f = []
         xs_hat_f = []
         x_f = []
-        ang_vel_f = []
+        zs_t_1_f = []
         for t in range(0, T-1):
             u_t = u[:, t]
             if t > int(T * H):
@@ -154,7 +155,7 @@ class DVBF(nn.Module):
             # Obtain the next step z's
             zs_t_1 = self.transition_net.forward(torch.cat([zs_t, u_t, ys_t], dim=-1))
 
-            # Compute the predicted distribution from the sample points TODO
+            # TODO: Compute the predicted distribution from the sample points
 
             # Pass through the decoder
             xs_hat_t_1, x_hat_params_t_1 = self.vae.decode(zs_t_1)
@@ -162,7 +163,7 @@ class DVBF(nn.Module):
             prior_params_y_f.append(prior_params_y_t)
             y_params_f.append(y_params_t)
             ys_f.append(ys_t)
-            ang_vel_f.append(zs_t_1)
+            zs_t_1_f.append(zs_t_1)
             prior_params_z_f.append(prior_params_z_t)
             z_params_f.append(z_params_t)
             zs_f.append(zs_t)
@@ -171,11 +172,11 @@ class DVBF(nn.Module):
             x_hat_params_f.append(x_hat_params_t_1)
             x_f.append(x[:, t+1])
 
-        return prior_params_y_f, y_params_f, ys_f, prior_params_z_f, z_params_f, zs_f, xs_hat_f, x_hat_params_f, x_f, ang_vel_f
+        return prior_params_y_f, y_params_f, ys_f, prior_params_z_f, z_params_f, zs_f, xs_hat_f, x_hat_params_f, x_f, zs_t_1_f
 
     def loss(self, x, u, H):
         batch_size, T, _ = u.shape
-        prior_params_y_f, y_params_f, ys_f, prior_params_z_f, z_params_f, zs_f, xs_hat_f, x_hat_params_f, x_f, ang_vel_f = self.filter(x, u, H)
+        prior_params_y_f, y_params_f, ys_f, prior_params_z_f, z_params_f, zs_f, xs_hat_f, x_hat_params_f, x_f, zs_t_1_f = self.filter(x, u, H)
         prior_params_y = torch.stack(prior_params_y_f, dim=1).view(batch_size*(T-1), self.dim_y, 2)
         y_params = torch.stack(y_params_f, dim=1).view(batch_size*(T-1), self.dim_y, 2)
         ys = torch.stack(ys_f, dim=1).view(batch_size*(T-1), self.dim_y)
@@ -193,32 +194,23 @@ class DVBF(nn.Module):
         logpy = self.prior_dist_y.log_density(ys, params=prior_params_y).view(batch_size, -1).sum(1)
         logqy_condx = self.q_dist_y.log_density(ys, params=y_params).view(batch_size, -1).sum(1)
 
-        elbo = logpx + (logpz - logqz_condx + logpy - logqy_condx)*0.35
+        elbo = logpx + self.beta*(logpz - logqz_condx) + self.lamb*(logpy - logqy_condx)
 
-        return x_recon.sigmoid(), elbo, elbo.detach()
-
-
-def format(x):
-    img = torch.clip(x * 255., 0, 255).to(torch.uint8)
-    return img.view(-1, 32, 32).numpy()
+        return x_recon, elbo, elbo.detach()
 
 
-def display_samples(x, x_recon, filename):
-    T = 14
-    frames = []
-    for i in range(T):
-        gt = format(x[i])
-        pred = format(x_recon[i])
-        img = np.concatenate([gt, pred], axis=1).squeeze()
-        # cv2.imshow(mat=img, winname='generated')
-        # cv2.waitKey(5)
-        # plt.imshow(img)
-        # plt.show()
-        frames.append(img)
-
-    with imageio.get_writer(f"{filename}.mp4", mode="I") as writer:
-        for idx, frame in enumerate(frames):
-            writer.append_data(frame)
+def anneal_kl(args, dvbf, iteration):
+    # Annealing function for the beta and lamda terms
+    # TODO: Improve the annealing function for the filter
+    warmup_iter = 2000
+    if args.lambda_anneal:
+        dvbf.lamb = max(0, 0.95 - 1 / warmup_iter * iteration)  # 1 --> 0
+    else:
+        dvbf.lamb = 0
+    if args.beta_anneal:
+        dvbf.beta = min(args.beta, args.beta / warmup_iter * iteration)  # 0 --> 1
+    else:
+        dvbf.beta = args.beta
 
 
 def main():
@@ -227,39 +219,62 @@ def main():
     parser.add_argument('-dist', default='normal', type=str, choices=['normal', 'laplace', 'flow'])
     parser.add_argument('-n', '--num-epochs', default=1000, type=int, help='number of training epochs')
     parser.add_argument('-b', '--batch-size', default=4000, type=int, help='batch size')
-    parser.add_argument('-l', '--learning-rate', default=1e-3, type=float, help='learning rate')
-    parser.add_argument('-z', '--latent-dim', default=3, type=int, help='size of latent dimension')
-    parser.add_argument('--beta', default=3, type=float, help='ELBO penalty term')
-    parser.add_argument('--tcvae', default=True, type=bool, help='Use TC VAE')
-    parser.add_argument('--exclude-mutinfo', default=False, type=bool, help='Use Mutual Information term or not')
+    parser.add_argument('--learning-rate', default=1e-3, type=float, help='learning rate')
+    parser.add_argument('--dim_z', default=3, type=int, help='size of latent dimension z')
+    parser.add_argument('--dim_y', default=3, type=int, help='size of latent dimension y')
+    parser.add_argument('--dim_h', default=128, type=int, help='size of hidden layer dimension of LSTM')
+    parser.add_argument('--beta', default=1, type=float, help='KL Scaling Factor of z')
+    parser.add_argument('--lambda', default=1, type=float, help='KL Scaling Factor of y')
     parser.add_argument('--beta-anneal', default=True, type=bool, help='Use annealing of beta hyperparameter')
     parser.add_argument('--lambda-anneal', default=True, type=bool, help='Use annealing of lambda hyperparameter')
     parser.add_argument('--use_cuda', default=True, type=bool, help='Use cuda or not, set False for CPU testing')
-    parser.add_argument('--mss', default=True, type=bool, help='Use Minibatch Stratified Sampling')
     parser.add_argument('--gpu', type=int, default=0)
     parser.add_argument('--visdom', default=True, type=bool, help='Use Visdom for real time plotting, makes it slower')
-    parser.add_argument('--save', default='results/pendulum/dbvf_train/train_02_05_I')   # Important configuration, else will overwrite TODO do it automatically
+    parser.add_argument('--save', default='results/pendulum/dbvf_train')
+    parser.add_argument('--vae_path', default='results/pendulum/vae_train')
+    parser.add_argument('--freeze_vae', default=False, type=bool, help='Freeze the VAE during the filter training or not')
+    parser.add_argument('--debug_dir', default='dump/pendulum/dbvf_train', help='Freeze the VAE during the filter training or not')
     parser.add_argument('--log_freq', default=500, type=int, help='num iterations per log')
+
     args = parser.parse_args()
 
     if args.use_cuda:
         torch.cuda.set_device(args.gpu)
 
     train_loader = DataLoader(dataset=dset.Pendulum(), batch_size=args.batch_size, shuffle=True) # for debug uncomment this version
-    vis = visdom.Visdom(port=8097)
-    dbvf = DVBF(dim_z=3, dim_beta=5, use_cuda=args.use_cuda)
+
+    # Create folders for the saving the model
+    now = datetime.now()
+    date_time = now.strftime("%m_%d_%Y_%H_%M_%S")
+    out_dir = os.path.join(args.save, date_time)
+    debug_dir = os.path.join(args.debug_dir, date_time)
+    if not os.path.exists(out_dir):
+        os.makedirs(out_dir)
+
+    if not os.path.exists(debug_dir):
+        os.makedirs(debug_dir)
+
+
+    dbvf = DVBF(dim_z=args.dim_z, dim_y=args.dim_y, dim_h=args.dim_h, load_vae=True, vae_file_path=args.vae_path, freeze_vae=False, use_cuda=args.use_cuda)
+
+    '''
+    TODO: Fix this in the event the training crashed
     load_dbvf = False
     if load_dbvf:
-        # TODO: improve checkpoint loading
         checkpoint_path = 'results/pendulum/dbvf_train/train_24_01/checkpt-0000.pth'
         checkpt = torch.load(checkpoint_path)
         state_dict = checkpt['state_dict']
         dbvf.load_state_dict(state_dict, strict=False)
         print('DBVF loaded successfully')
+    '''
 
     # setup the optimizer
     optimizer = optim.Adam(dbvf.parameters(), lr=args.learning_rate)
-    # optimizer = optim.Adadelta(dbvf.parameters(), lr=args.learning_rate)
+
+    # setup visdom for visualization
+    if args.visdom:
+        vis = visdom.Visdom(port=8097)
+
     train_elbo = []
 
     # training loop
@@ -268,8 +283,9 @@ def main():
     elbo_running_mean = utils.RunningAverageMeter()
     while iteration < num_iterations:
         for i, values in enumerate(train_loader):
-            H = torch.distributions.uniform.Uniform(0.5, 0.9).sample() # random masking to improve dynamics learning
-            obs, state, parameter, action = values
+            # random masking at the end of the sequence to improve dynamics learning
+            H = torch.distributions.uniform.Uniform(0.5, 0.9).sample()
+            obs, action, state, parameter = values
             batch_time = time.time()
             dbvf.train()
             optimizer.zero_grad()
@@ -301,10 +317,13 @@ def main():
 
                 utils.save_checkpoint({
                     'state_dict': dbvf.state_dict(),
-                    'args': args}, args.save, 0)
+                    'args': args}, out_dir, iteration)
 
-                plot_latent_vs_gt_pendulum(dbvf, dataset.Pendulum(), vis)
-                display_samples(x[0, :, :].cpu(), reconstruced[0, :, :].cpu(), f'dump/train_III/dvbf-iter-{iteration}')
+                plot_latent_dvbf(dbvf, dset.Pendulum(), vis)
+                plot_elbo(train_elbo, vis)
+                test_sample = reconstruced.sigmoid()
+                video_path = debug_dir + '/dvbf_train_'+str(iteration)
+                display_video(x[0, :, :].cpu(), test_sample[0, :, :].cpu(), video_path)
 
             iteration += 1
 
