@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
-from tcvae_utils.functions import STHeaviside
+from utils.functions import STHeaviside
 
 eps = 1e-8
 

@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
-from tcvae_utils.dist import Normal
+from utils.dist import Normal
 
 eps = 1e-8
 

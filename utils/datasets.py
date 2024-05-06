@@ -35,8 +35,6 @@ class Pendulum(object):
         self.params = torch.from_numpy(self.dataset_zip['parameters']).float()
         self.actions = torch.from_numpy(self.dataset_zip['actions']).float()
         self.imgs = self.imgs/255
-        num_trajectories = self.imgs.shape[0]
-        self.imgs = self.imgs.view(num_trajectories, 15, 32, 32)
 
     def __len__(self):
         return self.imgs.size(0)
@@ -46,7 +44,7 @@ class Pendulum(object):
         state = self.states[index].view(15, 2)
         parameter = self.params[index].view(15, 3)
         action = self.actions[index].view(15, 1)
-        return obs, state, parameter, action
+        return obs, action, state, parameter
 
 
 class Dataset(object):

@@ -4,36 +4,40 @@ import math
 from numbers import Number
 import argparse
 import torch
-torch.manual_seed(0)
 import torch.nn as nn
 import torch.optim as optim
 import visdom
 from torch.autograd import Variable
 from torch.utils.data import DataLoader
 import numpy as np
-np.random.seed(0)
 import random
+from datetime import datetime
+
+import utils.dist as dist
+import utils.compute_utils as utils
+import utils.datasets as dset
+from utils.flows import FactorialNormalizingFlow
+from utils.plot_latent import plot_latent_vae, display_samples, plot_elbo
+
+# Seeding for reproducibility
+np.random.seed(0)
+torch.manual_seed(0)
 random.seed(0)
-from tqdm import tqdm
-import tcvae_utils.dist as dist
-import tcvae_utils.utils as utils
-import tcvae_utils.datasets as dset
-from tcvae_utils.flows import FactorialNormalizingFlow
-from tcvae_utils.compute_metric import elbo_decomposition_pendulum, mutual_info_metric_pendulum    # Compute after training
-from tcvae_utils.plot_latent import plot_latent_vs_gt_pendulum, display_samples, plot_elbo
 
 
 class MLPEncoder(nn.Module):
+    """
+    MLP encoder for the VAE
+    """
     def __init__(self, output_dim):
         super(MLPEncoder, self).__init__()
         self.output_dim = output_dim
-
         self.fc1 = nn.Linear(1024, 512)
         self.fc2 = nn.Linear(512, 256)
         self.fc3 = nn.Linear(256, 128)
         self.fc4 = nn.Linear(128, output_dim)
 
-        # setup the non-linearity
+        # Setup the non-linearity
         self.act = nn.ReLU(inplace=True)
 
     def forward(self, x):
@@ -47,37 +51,40 @@ class MLPEncoder(nn.Module):
 
 
 class MLPDecoder(nn.Module):
+    """
+    MLP decoder for the VAE
+    """
     def __init__(self, input_dim):
         super(MLPDecoder, self).__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, 128),
-            nn.Tanh(),
-            nn.Linear(128, 256),
-            nn.Tanh(),
-            nn.Linear(256, 512),
-            nn.Tanh(),
-            nn.Linear(512, 1024)
-        )
+        self.fc1 = nn.Linear(input_dim, 128)
+        self.fc2 = nn.Linear(128, 256)
+        self.fc3 = nn.Linear(256, 512)
+        self.fc4 = nn.Linear(512, 1024)
+
+        # Setup non-linearity
+        self.act = nn.Tanh()
 
     def forward(self, z):
         h = z.view(z.size(0), -1)
-        h = self.net(h)
+        h = self.act(self.fc1(h))
+        h = self.act(self.fc2(h))
+        h = self.act(self.fc3(h))
+        h = self.fc4(h)
         mu_img = h.view(z.size(0), 1, 32, 32)
         return mu_img
 
 
 class VAE(nn.Module):
-    def __init__(self, dim_z, use_cuda=False, prior_dist=dist.Normal(), q_dist=dist.Normal(), include_mutinfo=True, tcvae=True, mss=False):
+    def __init__(self, dim_z, use_cuda=False, prior_dist=dist.Normal(), q_dist=dist.Normal(), include_mutinfo=True, disentanglement=True):
         super(VAE, self).__init__()
 
         self.use_cuda = use_cuda
         self.dim_z = dim_z
         self.include_mutinfo = include_mutinfo
-        self.tcvae = tcvae
+        self.disentanglement = disentanglement
         self.lamb = 0
         self.beta = 1
-        self.mss = mss
-        self.x_dist = dist.Bernoulli()
+        self.x_dist = dist.Bernoulli() # Reconstructed Distribution
 
         # Model-specific
         # distribution family of p(z)
@@ -139,51 +146,39 @@ class VAE(nn.Module):
         logpz = self.prior_dist.log_density(zs, params=prior_params).view(batch_size, -1).sum(1)
         logqz_condx = self.q_dist.log_density(zs, params=z_params).view(batch_size, -1).sum(1)
 
-        elbo = logpx + logpz - logqz_condx
-
-        if self.beta == 1 and self.include_mutinfo and self.lamb == 0:
+        # ---------------------------------------- No disentanglement --------------------------------------------------
+        if not self.disentanglement:
+            elbo = logpx + logpz - logqz_condx
             return elbo, elbo.detach()
+
+        # ----------------------------------------- Disentanglement ----------------------------------------------------
+        _logqz = self.q_dist.log_density(
+            zs.view(batch_size, 1, self.dim_z),
+            z_params.view(1, batch_size, self.dim_z, self.q_dist.nparams)
+        )
 
         # compute log q(z) ~= log 1/(NM) sum_m=1^M q(z|x_m) = - log(MN) + logsumexp_m(q(z|x_m))
         _logqz = self.q_dist.log_density(
             zs.view(batch_size, 1, self.dim_z),
             z_params.view(1, batch_size, self.dim_z, self.q_dist.nparams)
         )
+        # minibatch weighted sampling
+        logqz_prodmarginals = (logsumexp(_logqz, dim=1, keepdim=False) - math.log(batch_size * dataset_size)).sum(1)
+        logqz = (logsumexp(_logqz.sum(2), dim=1, keepdim=False) - math.log(batch_size * dataset_size))
 
-        if not self.mss:
-            # minibatch weighted sampling
-            logqz_prodmarginals = (logsumexp(_logqz, dim=1, keepdim=False) - math.log(batch_size * dataset_size)).sum(1)
-            logqz = (logsumexp(_logqz.sum(2), dim=1, keepdim=False) - math.log(batch_size * dataset_size))
+        if self.include_mutinfo:
+            # This is the complete disentanglement term - MI+TC+KL
+            modified_elbo = logpx - \
+                (logqz_condx - logqz) - \
+                self.beta * (logqz - logqz_prodmarginals) - \
+                (1 - self.lamb) * (logqz_prodmarginals - logpz)
         else:
-            # minibatch stratified sampling
-            logiw_matrix = Variable(log_importance_weight_matrix(batch_size, dataset_size).type_as(_logqz.data))
-            logqz = logsumexp(logiw_matrix + _logqz.sum(2), dim=1, keepdim=False)
-            logqz_prodmarginals = logsumexp(
-                logiw_matrix.view(batch_size, batch_size, 1) + _logqz, dim=1, keepdim=False).sum(1)
+            # This is partial disentanglement term - TC+KL
+            modified_elbo = logpx - \
+                self.beta * (logqz - logqz_prodmarginals) - \
+                (1 - self.lamb) * (logqz_prodmarginals - logpz)
 
-        if not self.tcvae:
-            if self.include_mutinfo:
-                modified_elbo = logpx - self.beta * (
-                    (logqz_condx - logpz) -
-                    self.lamb * (logqz_prodmarginals - logpz)
-                )
-            else:
-                modified_elbo = logpx - self.beta * (
-                    (logqz - logqz_prodmarginals) +
-                    (1 - self.lamb) * (logqz_prodmarginals - logpz)
-                )
-        else:
-            if self.include_mutinfo:
-                modified_elbo = logpx - \
-                    (logqz_condx - logqz) - \
-                    self.beta * (logqz - logqz_prodmarginals) - \
-                    (1 - self.lamb) * (logqz_prodmarginals - logpz)
-            else:
-                modified_elbo = logpx - \
-                    self.beta * (logqz - logqz_prodmarginals) - \
-                    (1 - self.lamb) * (logqz_prodmarginals - logpz)
-
-        return modified_elbo, elbo.detach()
+        return modified_elbo, modified_elbo.detach()
 
 
 def log_importance_weight_matrix(batch_size, dataset_size):
@@ -219,7 +214,8 @@ def logsumexp(value, dim=None, keepdim=False):
 
 
 def anneal_kl(args, vae, iteration):
-    warmup_iter = 5000
+    # Annealing function for the beta and lamda terms
+    warmup_iter = 2000
     if args.lambda_anneal:
         vae.lamb = max(0, 0.95 - 1 / warmup_iter * iteration)  # 1 --> 0
     else:
@@ -235,19 +231,19 @@ def main():
     parser = argparse.ArgumentParser(description="parse args")
     parser.add_argument('-dist', default='normal', type=str, choices=['normal', 'laplace', 'flow'])
     parser.add_argument('-n', '--num-epochs', default=25, type=int, help='number of training epochs')
-    parser.add_argument('-b', '--batch-size', default=5000, type=int, help='batch size')
-    parser.add_argument('-l', '--learning-rate', default=1e-3, type=float, help='learning rate')
-    parser.add_argument('-z', '--latent-dim', default=5, type=int, help='size of latent dimension')
-    parser.add_argument('--beta', default=1, type=float, help='ELBO penalty term')
-    parser.add_argument('--tcvae', default=True, type=bool, help='Use TC VAE')
-    parser.add_argument('--exclude-mutinfo', default=False, type=bool, help='Use Mutual Information term or not')
-    parser.add_argument('--beta-anneal', default=True, type=bool, help='Use annealing of beta hyperparameter')
+    parser.add_argument('-b', '--batch-size', default=100, type=int, help='batch size')
+    parser.add_argument('-l', '--learning-rate', default=5e-4, type=float, help='learning rate')
+    parser.add_argument('-z', '--latent-dim', default=3, type=int, help='size of latent dimension')
+    parser.add_argument('--beta', default=2, type=float, help='Total Correlation Scaling Factor')
+    parser.add_argument('--lambda', default=0, type=float, help='KL Scaling Factor')
+    parser.add_argument('--disentanglement', default=True, type=bool, help='Use TC VAE (Disentanglement or Not)')
+    parser.add_argument('--include-mutinfo', default=True, type=bool, help='Use Mutual Information term or not')
+    parser.add_argument('--beta-anneal', default=False, type=bool, help='Use annealing of beta hyperparameter')
     parser.add_argument('--lambda-anneal', default=True, type=bool, help='Use annealing of lambda hyperparameter')
     parser.add_argument('--use_cuda', default=True, type=bool, help='Use cuda or not, set False for CPU testing')
-    parser.add_argument('--mss', default=True, type=bool, help='Use Minibatch Stratified Sampling')
     parser.add_argument('--gpu', type=int, default=0)
     parser.add_argument('--visdom', default=True, type=bool, help='Use Visdom for real time plotting, makes it slower')
-    parser.add_argument('--save', default='results/pendulum/tcvae_train/train_06_03')   # Important configuration, else will overwrite TODO do it automatically
+    parser.add_argument('--save', default='results/pendulum/tcvae_train')
     parser.add_argument('--log_freq', default=200, type=int, help='num iterations per log')
     args = parser.parse_args()
 
@@ -255,9 +251,15 @@ def main():
         torch.cuda.set_device(args.gpu)
 
     # data loader
-    kwargs = {'num_workers': 4, 'pin_memory': args.use_cuda}
-    # train_loader = DataLoader(dataset=dset.Pendulum(), batch_size=args.batch_size, shuffle=True, **kwargs)
     train_loader = DataLoader(dataset=dset.Pendulum(), batch_size=args.batch_size, shuffle=True) # for debug uncomment this version
+
+    # Create folders for the saving the model
+    now = datetime.now()
+    date_time = now.strftime("%m_%d_%Y_%H_%M_%S")
+    out_dir = os.path.join(args.save, date_time)
+
+    if not os.path.exists(out_dir):
+        os.makedirs(out_dir)
 
     # setup the VAE
     if args.dist == 'normal':
@@ -270,14 +272,14 @@ def main():
         prior_dist = FactorialNormalizingFlow(dim=args.latent_dim, nsteps=32)
         q_dist = dist.Normal()
 
-    vae = VAE(dim_z=args.latent_dim, use_cuda=args.use_cuda, prior_dist=prior_dist, q_dist=q_dist, include_mutinfo=not args.exclude_mutinfo, tcvae=args.tcvae, mss=args.mss)
+    vae = VAE(dim_z=args.latent_dim, use_cuda=args.use_cuda, prior_dist=prior_dist, q_dist=q_dist, include_mutinfo=args.include_mutinfo, disentanglement=args.disentanglement)
 
     # setup the optimizer
     optimizer = optim.Adam(vae.parameters(), lr=args.learning_rate)
 
     # setup visdom for visualization
-    args.visdom = True
-    vis = visdom.Visdom(port=8097)  # change here
+    if args.visdom:
+        vis = visdom.Visdom(port=8097)
 
     train_elbo = []
 
@@ -289,17 +291,18 @@ def main():
     elbo_running_mean = utils.RunningAverageMeter()
     while iteration < num_iterations:
         for i, values in enumerate(train_loader):
-            obs, state, parameter = values
+            obs, action, state, parameter = values
             batch_time = time.time()
             vae.train()
             anneal_kl(args, vae, iteration)
             optimizer.zero_grad()
-            # transfer to GPU
+            # transfer to GPU and merge the sequence dimension
             if args.use_cuda:
                 x = obs.cuda()
             else:
                 x = obs
 
+            x = x.view(-1, 32, 32)
             # do ELBO gradient and accumulate loss
             obj, elbo = vae.elbo(x, dataset_size)
             if utils.isnan(obj).any():
@@ -317,43 +320,19 @@ def main():
 
                 vae.eval()
 
-                # plot training and test ELBOs
+                # Analyse results in the VISDOm
                 if args.visdom:
                     display_samples(vae, x, vis)
                     plot_elbo(train_elbo, vis)
+                    plot_latent_vae(vae, dset.Pendulum(), vis)
 
+
+                # Save checkpoint
                 utils.save_checkpoint({
                     'state_dict': vae.state_dict(),
-                    'args': args}, args.save, 0)
-                # plot_latent_vs_gt_pendulum(vae, dset.Pendulum(), os.path.join(args.save, 'gt_vs_latent_{:05d}.png'.format(iteration)))
+                    'args': args}, out_dir, iteration)
 
             iteration += 1
-
-    # Report statistics after training
-    vae.eval()
-    utils.save_checkpoint({
-        'state_dict': vae.state_dict(),
-        'args': args}, args.save, 0)
-    validation_loader = DataLoader(dset.Pendulum(), batch_size=2000, shuffle=False)
-    logpx, dependence, information, dimwise_kl, analytical_cond_kl, marginal_entropies, joint_entropy = elbo_decomposition_pendulum(vae, validation_loader)
-    torch.save({
-        'logpx': logpx,
-        'dependence': dependence,
-        'information': information,
-        'dimwise_kl': dimwise_kl,
-        'analytical_cond_kl': analytical_cond_kl,
-        'marginal_entropies': marginal_entropies,
-        'joint_entropy': joint_entropy
-    }, os.path.join(args.save, 'elbo_decomposition.pth'))
-    '''
-    TODO implement improved MIG 
-    metric, marginal_entropies, cond_entropies = mutual_info_metric_pendulum(vae, dset.Pendulum())
-    torch.save({
-        'metric': metric,
-        'marginal_entropies': marginal_entropies,
-        'cond_entropies': cond_entropies},
-        os.path.join(args.save, 'disentanglement_computation.pth'))
-    '''
 
 
 if __name__ == '__main__':
