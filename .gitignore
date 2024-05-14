@@ -1,10 +1,7 @@
 datasets
-<<<<<<< HEAD
 legacy/datasets
 legacy/results
-
-=======
 runs
 results
 .idea/*
->>>>>>> de8ee51a897027d2e2fde50a5edef92ce6f145e8
+dump

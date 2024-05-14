@@ -234,7 +234,7 @@ def main():
     parser.add_argument('--vae_path', default='results/pendulum/vae_train')
     parser.add_argument('--freeze_vae', default=False, type=bool, help='Freeze the VAE during the filter training or not')
     parser.add_argument('--debug_dir', default='dump/pendulum/dbvf_train', help='Freeze the VAE during the filter training or not')
-    parser.add_argument('--log_freq', default=500, type=int, help='num iterations per log')
+    parser.add_argument('--log_freq', default=100, type=int, help='num iterations per log')
 
     args = parser.parse_args()
 
@@ -284,7 +284,7 @@ def main():
     while iteration < num_iterations:
         for i, values in enumerate(train_loader):
             # random masking at the end of the sequence to improve dynamics learning
-            H = torch.distributions.uniform.Uniform(0.5, 0.9).sample()
+            H = 0.5 + 0.4*np.exp(-iteration/1000) #torch.distributions.uniform.Uniform(0.5, 0.9).sample()  #
             obs, action, state, parameter = values
             batch_time = time.time()
             dbvf.train()
