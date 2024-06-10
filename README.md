@@ -20,11 +20,19 @@ Run & Train -
 terminal to open the visualisation tab in the default browser
 2) Use `train_pendulum_vae.py` to pre-train the VAE model
 3) Use `train_pendulum_dvbf.py` to train the DVBF filtering model
-4) Use `test_pendulum_dvbf.py` to evaluate and test the trainined model (CLEANUP in progress)
+4) Use `test_pendulum_dvbf.py` to evaluate and test the trained model (lets call it basic one)
+OR
+5) Use `test_pendulum_dvbf_fusion.py` to evaluate and test the latent filter with Bayesian Integration model.
 
 Current DVBF (Latent Filter model)
-The current DVBF network model is - 
+The current DVBF network model for the basic version is - 
 ![Alt text](documentation/latent_filter.png)
 
-The Probabilistic Graphical Model for the about is presented as - 
+The current DVBF network model for the basic version is - 
+![Alt text](documentation/latent_filter_bi.jpg)
+
+The Probabilistic Graphical Model for the basic latent filter is presented as - 
 ![Alt text](documentation/latent_model.png)
+
+The Probabilistic Graphical Model for the basic latent filter is presented as - 
+![Alt text](documentation/latent_model_bi.jpg)
