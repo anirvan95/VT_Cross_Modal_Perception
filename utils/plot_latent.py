@@ -152,14 +152,14 @@ def plot_latent_dvbf(dbvf, pendulum_dataset, vis):
     batch_size = x.shape[0]
     T = x.shape[1]
 
-    prior_params_y_f, y_params_f, ys_f, prior_params_z_f, z_params_f, zs_f, xs_hat_f, x_hat_params_f, x_f, zs_t_1_f = dbvf.filter(x, u, H=1)
+    prior_params_y_f, y_params_f, ys_f, prior_params_z_f, z_params_f, zs_f, xs_hat_f, x_hat_params_f, x_f = dbvf.filter(x, u, H=1)
 
     # prior_params_y = torch.stack(prior_params_y_f, dim=1).view(batch_size * (T - 1), dbvf.dim_y, 2)
-    zs_t_1 = torch.stack(zs_t_1_f, dim=1).view(batch_size * (T - 1), dbvf.dim_z)
+    zs_t = torch.stack(zs_f, dim=1).view(batch_size * T, dbvf.dim_z)
     y_params = torch.stack(y_params_f, dim=1).view(batch_size * (T - 1), dbvf.dim_y, 2)
     # ys = torch.stack(ys_f, dim=1).view(batch_size * (T - 1), dbvf.dim_y)
     # prior_params_z = torch.stack(prior_params_z_f, dim=1).view(batch_size * (T - 1), dbvf.dim_z, 2)
-    z_params = torch.stack(z_params_f, dim=1).view(batch_size * (T - 1), dbvf.dim_z, 2)  # TODO : generalize here
+    z_params = torch.stack(z_params_f, dim=1).view(batch_size * T, dbvf.dim_z, 2)  # TODO : generalize here
     # zs = torch.stack(zs_f, dim=1).view(batch_size * (T - 1), dbvf.dim_z)
     # x_recon = torch.stack(xs_hat_f, dim=1)
     # x_recon_params = torch.stack(x_hat_params_f, dim=1).view(batch_size * (T - 1), 32, 32)
@@ -174,20 +174,20 @@ def plot_latent_dvbf(dbvf, pendulum_dataset, vis):
                              ['xr', 'xg', 'xb', 'xm', 'xc', 'xb'],
                              ['.r', '.g', '.b', '.m', '.c', '.b']])
 
-    states = s[:, :-1, :].reshape(batch_size * (T - 1), 2)
-    parameters = p[:, :-1, :].reshape(batch_size * (T-1), 3)
-
+    states = s.reshape(batch_size * T, 2)
+    length = p[:, :, 0:1].reshape(batch_size * T, 1)
+    hidden_params = p[:, 1:, 1:].reshape(batch_size * (T-1), 2)
     fig, ax = plt.subplots(3, Kz)
     # Directly Observable Cues
     for j in range(Kz):
         ax[0, j].plot(qz_means[:, j].cpu().detach(), states[:, 0], colors_label[0, j])
-        ax[0, j].set_xlabel('dim_z-'+str(i))
+        ax[0, j].set_xlabel('dim_z-'+str(j))
     for j in range(Kz):
-        ax[1, j].plot(zs_t_1[:, j].cpu().detach(), states[:, 1], colors_label[1, j])
-        ax[1, j].set_xlabel('dim_z_t_1-' + str(i))
+        ax[1, j].plot(qz_means[:, j].cpu().detach(), states[:, 1], colors_label[1, j])
+        ax[1, j].set_xlabel('dim_z-' + str(j))
     for j in range(Kz):
-        ax[2, j].plot(qz_means[:, j].cpu().detach(), parameters[:, 0], colors_label[2, j])
-        ax[2, j].set_xlabel('dim_z-' + str(i))
+        ax[2, j].plot(qz_means[:, j].cpu().detach(), length, colors_label[2, j])
+        ax[2, j].set_xlabel('dim_z-' + str(j))
 
     ax[0, 0].set_ylabel('GT Theta')
     ax[1, 0].set_ylabel('GT Angular Theta')
@@ -199,11 +199,11 @@ def plot_latent_dvbf(dbvf, pendulum_dataset, vis):
     # Hidden Cues
     fig, ax = plt.subplots(2, Ky)
     for j in range(Ky):
-        ax[0, j].plot(qy_means[:, j].cpu().detach(), parameters[:, 1], colors_label[0, j])
-        ax[0, j].set_xlabel('dim_y-' + str(i))
+        ax[0, j].plot(qy_means[:, j].cpu().detach(), hidden_params[:, 0], colors_label[0, j])
+        ax[0, j].set_xlabel('dim_y-' + str(j))
     for j in range(Ky):
-        ax[1, j].plot(qy_means[:, j].cpu().detach(), parameters[:, 2], colors_label[1, j])
-        ax[1, j].set_xlabel('dim_y-' + str(i))
+        ax[1, j].plot(qy_means[:, j].cpu().detach(), hidden_params[:, 1], colors_label[1, j])
+        ax[1, j].set_xlabel('dim_y-' + str(j))
 
     ax[0, 0].set_ylabel('GT Mass')
     ax[1, 0].set_ylabel('GT Joint Friction')
@@ -226,12 +226,12 @@ def plot_latent_dvbf(dbvf, pendulum_dataset, vis):
     # Plot the latent space with coloring according to the ground truth values of angular theta
     # Plot only top 3 space with high variance
     sorted_ang_theta, indices_ang_theta = torch.sort(states[:, 1])
-    zs_t_1_sorted = zs_t_1[indices_ang_theta]
+    zs_t_sorted = zs_t[indices_ang_theta]
     var_z = torch.std(qy_means.contiguous(), dim=0).pow(2)
     var_z_sort, info_dim_z = torch.sort(var_z)
-    zs_t_1_sorted = zs_t_1_sorted[:, info_dim_z[-3:]]
+    zs_t_sorted = zs_t_sorted[:, info_dim_z[-3:]]
 
-    win_space_atheta = vis.scatter(zs_t_1_sorted.cpu().detach(),
+    win_space_atheta = vis.scatter(zs_t_sorted.cpu().detach(),
                                   opts={'caption': 'latent angular space', 'markercolor': colors, 'markersize': 2},
                                   win=win_space_atheta)
 
