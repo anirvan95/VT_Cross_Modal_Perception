@@ -25,18 +25,25 @@ class GaussianMapper(nn.Module):
         x = self.fc3(x)
         return x
 
+# # Transform gaussian varaibles. Mimick the non-linear correlation between visual and haptic latent spaces
+# def mean_transform(variable):
+#     noise = np.random.randn(*variable.shape)/10
+#     transformed_variable = (np.sin(variable) + np.cos(variable**2) - np.exp(-variable) + 
+#                        np.log(np.abs(variable) + 1) ** 2 + np.tan(variable / 3.0)) + noise
+#     return transformed_variable
+
+# # Transform gaussian varaibles. Mimick the non-linear correlation between visual and haptic latent spaces
+# def std_transform(variable):
+#     noise = np.random.randn(*variable.shape)/5
+#     transformed_variable = (np.cos(variable) + np.sin(variable**2) + np.exp(-variable/3) - 
+#                        np.log(np.abs(variable) + 1) ** 3 + np.tan(variable / 2.0)) + noise
+#     return transformed_variable
+
 # Transform gaussian varaibles. Mimick the non-linear correlation between visual and haptic latent spaces
-def mean_transform(variable):
+def complex_transform(variable):
     noise = np.random.randn(*variable.shape)/10
     transformed_variable = (np.sin(variable) + np.cos(variable**2) - np.exp(-variable) + 
                        np.log(np.abs(variable) + 1) ** 2 + np.tan(variable / 3.0)) + noise
-    return transformed_variable
-
-# Transform gaussian varaibles. Mimick the non-linear correlation between visual and haptic latent spaces
-def std_transform(variable):
-    noise = np.random.randn(*variable.shape)/5
-    transformed_variable = (np.cos(variable) + np.sin(variable**2) + np.exp(-variable/3) - 
-                       np.log(np.abs(variable) + 1) ** 3 + np.tan(variable / 2.0)) + noise
     return transformed_variable
 
 # Initialize the network, loss function, and optimizer
@@ -46,8 +53,8 @@ optimizer = optim.Adam(net.parameters(), lr=0.001)
 
 # Generate training data
 mu1, sigma1 = np.random.randn(2, 32, 100)
-mu2 = mean_transform(mu1)
-sigma2 = std_transform(sigma1)
+mu2 = complex_transform(mu1)
+sigma2 = complex_transform(sigma1)
 source_gaussians = np.concatenate((mu1, sigma1), axis=0).astype(np.float32)
 source_gaussians = torch.from_numpy(source_gaussians).view(-1, 1)
 target_gaussians = np.concatenate((mu2, sigma2), axis=0).astype(np.float32)
