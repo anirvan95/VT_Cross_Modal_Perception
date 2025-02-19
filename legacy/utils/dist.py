@@ -7,7 +7,6 @@ from torch.autograd import Variable
 from utils.functions import STHeaviside
 
 eps = 1e-8
-loss = torch.nn.MSELoss()
 
 
 class Normal(nn.Module):
@@ -60,17 +59,6 @@ class Normal(nn.Module):
         inv_sigma = torch.exp(-logsigma)
         tmp = (sample - mu) * inv_sigma
         return -0.5 * (tmp * tmp + 2 * logsigma + c)
-
-    def log_density_pro(self, sample, params=None):
-        if params is not None:
-            mu, logsigma = self._check_inputs(None, params)
-        else:
-            mu, logsigma = self._check_inputs(sample.size(), None)
-            mu = mu.type_as(sample)
-            logsigma = logsigma.type_as(sample)
-
-        tmp = (sample - mu)**2
-        return -tmp
 
     def NLL(self, params, sample_params=None):
         """Analytically computes

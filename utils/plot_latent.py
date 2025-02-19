@@ -1,13 +1,21 @@
+import os
 import matplotlib
-matplotlib.use('Agg')
+# matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+import seaborn as sns
+from scipy.spatial.distance import pdist, squareform
 import torch
-from torch.utils.data import DataLoader
 import numpy as np
 import imageio
+import umap
 
 VAR_THRESHOLD = 1e-4
 latent_walks = 15
+horizon = 26  # 1 Hz
+action_dim = 2 # pose + param
+obs_dim = [30, 30, 2] # Spatial and Vibration
+
 win_samples = None
 win_test_reco = None
 win_latent_walk = None
@@ -16,9 +24,24 @@ win_correlation = None
 win_space = None
 win_static_correlation = None
 win_dynamic_correlation = None
-win_space_theta = None
-win_space_atheta = None
+win_space_z = None
+win_space_y = None
+win_embed_space_z = None
+win_embed_space_y = None
+win_space_h = None
+win_embed_space_h = None
 
+win_label = None
+win_test_reco = None
+loss = torch.nn.MSELoss()
+
+layout_def = {
+    'scene': {
+        'xaxis': {'range': [-0.1, 0.1]},
+        'yaxis': {'range': [-0.1, 0.1]},
+        'zaxis': {'range': [0, 0.1]},
+    }
+}
 
 def generate_gradient_colors(N):
     t = np.linspace(0, 1, N)
@@ -31,209 +54,290 @@ def generate_gradient_colors(N):
 
     return colors
 
+def compute_distances(features, labels):
+    unique_classes = np.unique(labels)
 
-def display_samples(model, x, vis):
-    global win_samples, win_test_reco, win_latent_walk
+    # Initialize the distance matrix
+    distance_matrix = np.zeros((len(unique_classes), len(unique_classes)))
 
-    # plot random samples
-    sample_mu = model.model_sample(batch_size=100).sigmoid()
-    images = np.array(sample_mu.view(-1, 1, 32, 32).data.cpu())
-    win_samples = vis.images(images, 10, 2, opts={'caption': 'samples'}, win=win_samples)
+    # Compute intra-class distances
+    for i, cls in enumerate(unique_classes):
+        class_indices = np.where(labels == cls)[0]
+        class_features = features[class_indices]
 
-    # plot the reconstructed distribution for the first 50 test images
-    test_imgs = x[:50, :]
-    _, reco_imgs, zs, _ = model.reconstruct_img(test_imgs)
-    reco_imgs = reco_imgs.sigmoid()
-    test_reco_imgs = torch.cat([test_imgs.view(1, -1, 32, 32), reco_imgs.view(1, -1, 32, 32)], 0).transpose(0, 1)
-    win_test_reco = vis.images(np.array(test_reco_imgs.contiguous().view(-1, 1, 32, 32).data.cpu()), 10, 2, opts={'caption': 'test reconstruction image'}, win=win_test_reco)
+        if len(class_features) > 1:  # Ensure there are at least 2 samples
+            distances = pdist(class_features)  # Pairwise distances
+            intra_class_distance = np.mean(distances)  # Average intra-class distance
+            distance_matrix[i, i] = intra_class_distance
 
-    # plot latent walks
-    zs_sample = zs[0:1, :]
-    _, dim_z = zs_sample.size()
-    xs = []
-    with torch.no_grad():
-        delta = torch.autograd.Variable(torch.linspace(-2, 2, latent_walks)).type_as(zs_sample) # variations in each dimension of latent space
+    # Compute inter-class distances
+    for i in range(len(unique_classes)):
+        for j in range(i + 1, len(unique_classes)):
+            class_i_features = features[labels == unique_classes[i]]
+            class_j_features = features[labels == unique_classes[j]]
 
-    zs_delta = zs_sample.clone().view(1, 1, dim_z)
-    for i in range(dim_z):
-        vec = torch.zeros(dim_z).view(1, dim_z).expand(latent_walks, dim_z).contiguous().type_as(zs_sample)
-        vec[:, i] = 1
-        vec = vec * delta[:, None]
-        # zs_delta[:, :, i] = 0
-        zs_walk = zs_delta + vec[None]
-        xs_walk = model.decoder.forward(zs_walk.view(-1, dim_z)).sigmoid()
-        xs.append(xs_walk)
+            # Compute pairwise distances between the two classes
+            distances = pdist(np.vstack([class_i_features, class_j_features]))
+            inter_class_distance = np.mean(distances)  # Average inter-class distance
+            distance_matrix[i, j] = inter_class_distance
+            distance_matrix[j, i] = inter_class_distance  # Symmetric matrix
 
-    xs = np.array(torch.cat(xs, 0).data.cpu())
-    win_latent_walk = vis.images(xs, latent_walks, dim_z, opts={'caption': 'latent walk'}, win=win_latent_walk)
+    return distance_matrix, unique_classes
 
-
-def plot_elbo(train_elbo, vis):
-    global win_train_elbo
-    win_train_elbo = vis.line(torch.Tensor(train_elbo), opts={'markers': True}, win=win_train_elbo)
-
-
-def plot_latent_vae(vae, pendulum_dataset, vis):
-    global win_correlation, win_space
-    validation_loader = DataLoader(pendulum_dataset, batch_size=500, shuffle=False)
-    vae.eval()
+def extract_test_cases(test_loader):
+    xf = []
+    af = []
+    labelf = []
+    first = True
     # Extract test cases from the whole batch
-    for i, values in enumerate(validation_loader):
-        obs, action, state, parameter = values
-        if i == 0:
-            x = obs[0:1, :, :, :]
-            s = state[0:1, :, :]
-            p = parameter[0:1, :, :]
+    for i, values in enumerate(test_loader):
+        obs, action, label = values
+        if first:
+            xf = obs[0:1, :, :, :, :]
+            af = action[0:1, :, :]
+            labelf = label[0:1, :, :]
+            first = False
         else:
-            x = torch.cat([x, obs[0:1, :, :, :]], dim=0)
-            s = torch.cat([s, state[0:1, :, :]], dim=0)
-            p = torch.cat([p, parameter[0:1, :, :]], dim=0)
+            xf = torch.cat([xf, obs[0:1, :, :, :, :]], dim=0)
+            af = torch.cat([af, action[0:1, :, :]], dim=0)
+            labelf = torch.cat([labelf, label[0:1, :, :]], dim=0)
+
+    batch_size, T, _ = af.shape
+    x = xf
+    color_vals = []
+    label_ind = []
+    cmap1 = plt.get_cmap('tab20b')
+    cmap2 = plt.get_cmap('tab20c')
+    for i in range(labelf.shape[0]):
+        object_label = labelf[i, 0, 0]
+        col = cmap1(object_label / 27)
+        col_rgb = np.array([col[0], col[1], col[2]]) * 255
+        for j in range(0, horizon):
+            label_ind.append(object_label)
+            col_lighter = col_rgb
+            color_vals.append(np.array([col_lighter[0], col_lighter[1], col_lighter[2]]))
+
+    label_ind = np.array(label_ind)
+    indices = np.arange(0, label_ind.shape[0])
+
+    color_vals = np.array(color_vals)
+    color_vals = color_vals.astype(int)
+    label_scatter = torch.concat([torch.from_numpy(indices[:, None]), torch.from_numpy(label_ind[:, None])], axis=-1)
+
+    return x, af, labelf, label_scatter, color_vals
+
+
+def plot_vae(vae, vis, x, u, labels, label_scatter, color_vals):
+    global win_test_reco, win_label, win_space_z, win_embed_space_z
 
     x = x.cuda()
-    x = x.view(-1, 32, 32)
-    states = s.view(-1, 2)
-    parameters = p.view(-1, 3)
+    x = x.view(-1, 30, 30, 2)
+    batch_size = x.size(0)
 
-    xs, x_params, zs, z_params = vae.reconstruct_img(x)
+    with torch.no_grad():
+        zs, z_params = vae.encode(x)
+        xs, x_params = vae.decode(zs)
 
-    qz_means = z_params[:, :, 0]
-    dim_z = qz_means.shape[1]
+    # #################################### Plot few reconstruction of the tactile data #################################################
+    print('MSE Loss -', loss(xs, x).cpu().numpy())
 
-    colors_label = np.array([['*r', '*g', '*b', '*m', '*c', '*k'],
-                             ['xr', 'xg', 'xb', 'xm', 'xc', 'xb'],
-                             ['.r', '.g', '.b', '.m', '.c', '.b']])
+    fig, ax = plt.subplots(3, 3, figsize=(5, 5))
+    # Plot mean reconstruction
+    tactile_recon_mean = torch.mean(xs, dim=(1,3))
+    tactile_recon_gt = torch.mean(x, dim=(1,3))
 
-
-    # Plotting trend (correlation) of the grount truth states with the learn latent space
-    fig, ax = plt.subplots(2, dim_z)
-    for j in range(dim_z):
-        ax[0, j].plot(qz_means[:, j].cpu().detach(), states[:, 0], colors_label[0, j])
-
-    for j in range(dim_z):
-        ax[1, j].plot(qz_means[:, j].cpu().detach(), parameters[:, 0], colors_label[2, j])
-
-    win_correlation = vis.matplot(plt, win=win_correlation)
+    index = 0
+    for i in range(3):
+        for j in range(3):
+            ax[i, j].plot(tactile_recon_mean[index, :].cpu().detach(), '.r')
+            ax[i, j].plot(tactile_recon_gt[index, :].cpu().detach(), '.b')
+            index += int(x.shape[0] / 9)  # 9 the samples
+    win_test_reco = vis.matplot(plt, win=win_test_reco)
     plt.close()
 
-    # Plot the latent space with coloring according to the ground truth values of theta
-    sorted_values, indices = torch.sort(states[:, 0])
-    qz_means_sorted = qz_means[indices]
-    var = torch.std(qz_means.contiguous(), dim=0).pow(2)
-    var_sort, info_dim = torch.sort(var)
-    qz_means_sorted = qz_means_sorted[:, info_dim[-3:]]
+    # #################################### Plot the latent space #################################################
+    qz_means = z_params[:, :, 0].cpu()
 
-    colors = generate_gradient_colors(states.shape[0])
+    z_embedded = umap.UMAP(n_components=2).fit_transform(qz_means.numpy())
+    z_embedded = np.concatenate([z_embedded, np.zeros([batch_size, 1])], axis=-1)
+    var_z = torch.std(qz_means.contiguous(), dim=0).pow(2)
+    var_sort, dim_z = torch.sort(var_z)
+    # print('Z Var: ', var_sort)
+    qz_means_inf = qz_means[:, dim_z[-3:]]
+    color_vals_z = color_vals
+    win_space_z = vis.scatter(qz_means_inf,
+                              opts={'caption': 'latent z space', 'markercolor': color_vals_z, 'markersize': 2,
+                                    'layout': layout_def},
+                              win=win_space_z)
 
-    win_space = vis.scatter(qz_means_sorted.cpu().detach(), opts={'caption': 'latent theta space', 'markercolor': colors, 'markersize': 2}, win=win_space)
+    win_embed_space_z = vis.scatter(z_embedded,
+                                    opts={'caption': 'latent z space', 'markercolor': color_vals_z, 'markersize': 2,
+                                          'layout': layout_def},
+                                    win=win_embed_space_z)
+
+    win_label = vis.scatter(label_scatter, opts={'caption': 'labels', 'markercolor': color_vals, 'markersize': 10},
+                            win=win_label)
 
 
-def plot_latent_dvbf(dbvf, pendulum_dataset, vis):
-    global win_static_correlation, win_dynamic_correlation, win_space_theta, win_space_atheta
-    validation_loader = DataLoader(pendulum_dataset, batch_size=500, shuffle=False)
-    dbvf.eval()
 
-    # Extract test cases from the whole batch
-    for i, values in enumerate(validation_loader):
-        obs, action, state, parameter = values
-        if i == 0:
-            x = obs[0:1, :, :, :]
-            u = action[0:1, :, :]
-            s = state[0:1, :, :]
-            p = parameter[0:1, :, :]
-
-        else:
-            x = torch.cat([x, obs[0:1, :, :, :]], dim=0)
-            u = torch.cat([u, action[0:1, :, :]], dim=0)
-            s = torch.cat([s, state[0:1, :, :]], dim=0)
-            p = torch.cat([p, parameter[0:1, :, :]], dim=0)
+def plot_lf(dvbf, vis, x, u, labels, label_scatter, color_vals):
+    global win_space_y, win_test_reco, win_label, win_space_z, win_embed_space_y, win_embed_space_z, win_embed_space_h
 
     x = x.cuda()
     u = u.cuda()
+    labels = labels.cuda()
     batch_size = x.shape[0]
-    T = x.shape[1]
+    with torch.no_grad():
+        prior_params_y_f, y_params_f, ys_f, prior_params_z_f, z_params_f, zs_f, xs_hat_f, x_hat_params_f, x_f, hs_f, cs_f = dvbf.filter(x, u, labels, H=1)
 
-    prior_params_y_f, y_params_f, ys_f, prior_params_z_f, z_params_f, zs_f, xs_hat_f, x_hat_params_f, x_f = dbvf.filter(x, u, H=1)
+    y_params = torch.stack(y_params_f, dim=1)
+    z_params = torch.stack(z_params_f, dim=1)
+    x_recon = torch.stack(xs_hat_f, dim=1)
 
-    # prior_params_y = torch.stack(prior_params_y_f, dim=1).view(batch_size * (T - 1), dbvf.dim_y, 2)
-    zs_t = torch.stack(zs_f, dim=1).view(batch_size * T, dbvf.dim_z)
-    y_params = torch.stack(y_params_f, dim=1).view(batch_size * (T - 1), dbvf.dim_y, 2)
-    # ys = torch.stack(ys_f, dim=1).view(batch_size * (T - 1), dbvf.dim_y)
-    # prior_params_z = torch.stack(prior_params_z_f, dim=1).view(batch_size * (T - 1), dbvf.dim_z, 2)
-    z_params = torch.stack(z_params_f, dim=1).view(batch_size * T, dbvf.dim_z, 2)  # TODO : generalize here
-    # zs = torch.stack(zs_f, dim=1).view(batch_size * (T - 1), dbvf.dim_z)
-    # x_recon = torch.stack(xs_hat_f, dim=1)
-    # x_recon_params = torch.stack(x_hat_params_f, dim=1).view(batch_size * (T - 1), 32, 32)
-    # x_t_1 = torch.stack(x_f, dim=1).view(batch_size * (T - 1), 32, 32)
-
-    qz_means = z_params[:, :, 0]
-    qy_means = y_params[:, :, 0]
-    Kz = qz_means.shape[1]
-    Ky = qy_means.shape[1]
-
-    colors_label = np.array([['*r', '*g', '*b', '*m', '*c', '*k'],
-                             ['xr', 'xg', 'xb', 'xm', 'xc', 'xb'],
-                             ['.r', '.g', '.b', '.m', '.c', '.b']])
-
-    states = s.reshape(batch_size * T, 2)
-    length = p[:, :, 0:1].reshape(batch_size * T, 1)
-    hidden_params = p[:, 1:, 1:].reshape(batch_size * (T-1), 2)
-    fig, ax = plt.subplots(3, Kz)
-    # Directly Observable Cues
-    for j in range(Kz):
-        ax[0, j].plot(qz_means[:, j].cpu().detach(), states[:, 0], colors_label[0, j])
-        ax[0, j].set_xlabel('dim_z-'+str(j))
-    for j in range(Kz):
-        ax[1, j].plot(qz_means[:, j].cpu().detach(), states[:, 1], colors_label[1, j])
-        ax[1, j].set_xlabel('dim_z-' + str(j))
-    for j in range(Kz):
-        ax[2, j].plot(qz_means[:, j].cpu().detach(), length, colors_label[2, j])
-        ax[2, j].set_xlabel('dim_z-' + str(j))
-
-    ax[0, 0].set_ylabel('GT Theta')
-    ax[1, 0].set_ylabel('GT Angular Theta')
-    ax[2, 0].set_ylabel('GT Length')
-
-    win_static_correlation = vis.matplot(plt, win=win_static_correlation)
+    # #################################### Plot few reconstruction of the tactile data #################################################
+    print('MSE Loss -', loss(x_recon, x).cpu().numpy())
+    # Plot mean reconstruction
+    tactile_recon_mean = torch.mean(x_recon, dim=(2, 3, 4))
+    tactile_recon_gt = torch.mean(x, dim=(2, 3, 4))
+    fig, ax = plt.subplots(3, 3, figsize=(5, 5))
+    index = 0
+    for i in range(3):
+        for j in range(3):
+            ax[i, j].plot(tactile_recon_mean[index, :].cpu().detach(), '.r')
+            ax[i, j].plot(tactile_recon_gt[index, :].cpu().detach(), '.b')
+            index += int(x.shape[0] / 9)  # 9 the samples
+    win_test_reco = vis.matplot(plt, win=win_test_reco)
     plt.close()
 
-    # Hidden Cues
-    fig, ax = plt.subplots(2, Ky)
-    for j in range(Ky):
-        ax[0, j].plot(qy_means[:, j].cpu().detach(), hidden_params[:, 0], colors_label[0, j])
-        ax[0, j].set_xlabel('dim_y-' + str(j))
-    for j in range(Ky):
-        ax[1, j].plot(qy_means[:, j].cpu().detach(), hidden_params[:, 1], colors_label[1, j])
-        ax[1, j].set_xlabel('dim_y-' + str(j))
+    # #################################### Plot the latent space #################################################
+    # time_indx = np.arange(0, 26)  # Plot the inferred last time steps of the latent
+    y_params = y_params.cpu()
+    qy_means = y_params[:, :, :, 0]
+    qy_means = qy_means.reshape(y_params.shape[0]*(horizon-1), dvbf.dim_y)
 
-    ax[0, 0].set_ylabel('GT Mass')
-    ax[1, 0].set_ylabel('GT Joint Friction')
+    #y_embedded = umap.UMAP(n_components=2).fit_transform(qy_means.numpy())
+    #y_embedded = np.concatenate([y_embedded, np.zeros([batch_size*(horizon-1), 1])], axis=-1)
+    var_y = torch.std(qy_means.contiguous(), dim=0).pow(2)
+    var_sort, dim_y = torch.sort(var_y)
+    # print('Y Var: ', var_sort)
+    qy_means_inf = qy_means[:, dim_y[-3:]]
+    color_vals_y = color_vals.reshape([batch_size, horizon, 3])
+    color_vals_y = color_vals_y[:, 0:-1, :]
+    color_vals_y = color_vals_y.reshape([batch_size*(horizon-1), 3])
+    win_space_y = vis.scatter(qy_means_inf,
+                              opts={'caption': 'latent y space', 'markercolor': color_vals_y, 'markersize': 2.5,
+                                    'layout': layout_def},
+                              win=win_space_y)
+    '''
+    win_embed_space_y = vis.scatter(y_embedded,
+                                    opts={'caption': 'latent y space', 'markercolor': color_vals_y, 'markersize': 2.5,
+                                          'layout': layout_def},
+                                    win=win_embed_space_y)
+    '''
+    z_params = z_params.cpu()
+    qz_means = z_params[:, :, :, 0]
+    qz_means = qz_means.reshape(z_params.shape[0] * horizon, z_params.shape[-2])
 
-    win_dynamic_correlation = vis.matplot(plt, win=win_dynamic_correlation)
+    #z_embedded = umap.UMAP(n_components=2).fit_transform(qz_means.numpy())
+    #z_embedded = np.concatenate([z_embedded, np.zeros([batch_size*horizon, 1])], axis=-1)
+    var_z = torch.std(qz_means.contiguous(), dim=0).pow(2)
+    var_sort, dim_z = torch.sort(var_z)
+    # print('Z Var: ', var_sort)
+    qz_means_inf = qz_means[:, dim_z[-3:]]
+
+    win_space_z = vis.scatter(qz_means_inf,
+                              opts={'caption': 'latent z space', 'markercolor': color_vals, 'markersize': 2, 'layout': layout_def},
+                              win=win_space_z)
+    '''
+    win_embed_space_z = vis.scatter(z_embedded,
+                              opts={'caption': 'latent z space', 'markercolor': color_vals, 'markersize': 2, 'layout': layout_def},
+                              win=win_embed_space_z)
+    '''
+
+
+def save_lf(dvbf, x, u, labels, label_scatter, color_vals, iteration, out_dir):
+
+    x = x.cuda()
+    u = u.cuda()
+    labels = labels.cuda()
+    batch_size = x.shape[0]
+    with torch.no_grad():
+        prior_params_y_f, y_params_f, ys_f, prior_params_z_f, z_params_f, zs_f, xs_hat_f, x_hat_params_f, x_f, hs_f, cs_f = dvbf.filter(x, u, labels, H=1)
+
+    y_params = torch.stack(y_params_f, dim=1)
+    z_params = torch.stack(z_params_f, dim=1)
+    x_recon = torch.stack(xs_hat_f, dim=1)
+
+    # #################################### Plot few reconstruction of the tactile data #################################################
+    # print('MSE Loss -', loss(x_recon, x).cpu().numpy())
+    # Plot mean reconstruction
+    tactile_recon_mean = torch.mean(x_recon, dim=(2, 3, 4))
+    tactile_recon_gt = torch.mean(x, dim=(2, 3, 4))
+    fig, ax = plt.subplots(3, 3, figsize=(5, 5))
+    index = 0
+    for i in range(3):
+        for j in range(3):
+            ax[i, j].plot(tactile_recon_mean[index, :].cpu().detach(), '.r')
+            ax[i, j].plot(tactile_recon_gt[index, :].cpu().detach(), '.b')
+            index += int(x.shape[0] / 9)  # 9 the samples
+    recon_fig_name = os.path.join(out_dir, 'reconstructed_'+str(iteration)+'.png')
+    plt.savefig(recon_fig_name)
     plt.close()
 
-    # Plot the latent space with coloring according to the ground truth values of theta
-    sorted_theta, indices_theta = torch.sort(states[:, 0])
-    qz_means_sorted = qz_means[indices_theta]
-    var = torch.std(qz_means.contiguous(), dim=0).pow(2)
-    var_sort, info_dim = torch.sort(var)
-    qz_means_sorted = qz_means_sorted[:, info_dim[-3:]]
-    colors = generate_gradient_colors(states.shape[0])
+    # #################################### Plot the latent space #################################################
+    # time_indx = np.arange(0, 26)  # Plot the inferred last time steps of the latent
+    y_params = y_params.cpu()
+    qy_means = y_params[:, :, :, 0]
+    qy_means = qy_means.reshape(y_params.shape[0]*(horizon-1), dvbf.dim_y)
 
-    win_space_theta = vis.scatter(qz_means_sorted.cpu().detach(),
-                                  opts={'caption': 'latent theta space', 'markercolor': colors, 'markersize': 2},
-                                  win=win_space_theta)
+    #y_embedded = umap.UMAP(n_components=2).fit_transform(qy_means.numpy())
+    #y_embedded = np.concatenate([y_embedded, np.zeros([batch_size*(horizon-1), 1])], axis=-1)
+    var_y = torch.std(qy_means.contiguous(), dim=0).pow(2)
+    var_sort, dim_y = torch.sort(var_y)
+    # print('Y Var: ', var_sort)
+    qy_means_inf = qy_means[:, dim_y[-3:]]
+    color_vals_y = color_vals.reshape([batch_size, horizon, 3])
+    color_vals_y = color_vals_y[:, 0:-1, :]
+    color_vals_y = color_vals_y.reshape([batch_size*(horizon-1), 3])
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection='3d')
+    ax.scatter(qy_means_inf[:, 0], qy_means_inf[:, 1], qy_means_inf[:, 2], c=color_vals_y/255, s=10)
+    plt.savefig(os.path.join(out_dir, 'latent_y_space_'+str(iteration)+'.png'))
+    plt.close()
 
-    # Plot the latent space with coloring according to the ground truth values of angular theta
-    # Plot only top 3 space with high variance
-    sorted_ang_theta, indices_ang_theta = torch.sort(states[:, 1])
-    zs_t_sorted = zs_t[indices_ang_theta]
-    var_z = torch.std(qy_means.contiguous(), dim=0).pow(2)
-    var_z_sort, info_dim_z = torch.sort(var_z)
-    zs_t_sorted = zs_t_sorted[:, info_dim_z[-3:]]
+    z_params = z_params.cpu()
+    qz_means = z_params[:, :, :, 0]
+    qz_means = qz_means.reshape(z_params.shape[0] * horizon, z_params.shape[-2])
 
-    win_space_atheta = vis.scatter(zs_t_sorted.cpu().detach(),
-                                  opts={'caption': 'latent angular space', 'markercolor': colors, 'markersize': 2},
-                                  win=win_space_atheta)
+    #z_embedded = umap.UMAP(n_components=2).fit_transform(qz_means.numpy())
+    #z_embedded = np.concatenate([z_embedded, np.zeros([batch_size*horizon, 1])], axis=-1)
+    var_z = torch.std(qz_means.contiguous(), dim=0).pow(2)
+    var_sort, dim_z = torch.sort(var_z)
+    # print('Z Var: ', var_sort)
+    qz_means_inf = qz_means[:, dim_z[-3:]]
+
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection='3d')
+    ax.scatter(qz_means_inf[:, 0], qz_means_inf[:, 1], qz_means_inf[:, 2], c=color_vals/255, s=5)
+    plt.savefig(os.path.join(out_dir, 'latent_z_space_' + str(iteration) + '.png'))
+    plt.close()
+
+    # Perform quick distance computation of the last time steps
+
+    features_np = torch.concat([z_params[:, -2:-1, :, 0:1], y_params[:, -2:-1, :, 0:1]], axis=2)
+    features_np = features_np[:, 0, :, 0]
+    features_np = features_np.cpu().detach().numpy()
+    labels_np = labels[:, -1, 0]
+    labels_np = labels_np.cpu().detach().numpy()
+    distance_matrix, unique_classes = compute_distances(features_np, labels_np)
+    plt.figure(figsize=(15, 10))
+    sns.heatmap(distance_matrix, annot=True, cmap='coolwarm', xticklabels=unique_classes, yticklabels=unique_classes)
+    plt.gca().invert_yaxis()
+    plt.title('Distance Matrix (Intra-Class on Diagonal, Inter-Class Off-Diagonal)')
+    plt.xlabel('Class Label')
+    plt.ylabel('Class Label')
+    plt.savefig(os.path.join(out_dir, 'distance_metric_' + str(iteration) + '.png'))
+    plt.close()
 
 
 def format(x):

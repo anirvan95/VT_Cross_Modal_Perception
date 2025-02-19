@@ -1,70 +1,101 @@
 import numpy as np
 import torch
-import torchvision.datasets as datasets
-import torchvision.transforms as transforms
+from torch.utils.data import Dataset
 
+class CrossModalAdv(Dataset):
+    def __init__(self, file_paths, transform=None):
+        """
+        Args:
+           file_paths (list of str): List of file paths to load the data.
+        """
+        self.file_paths = file_paths
+        self.transform = transform
 
-class Shapes(object):
+        # Store the lengths of data in each file to allow indexing across files
+        self.file_lengths = self._get_file_lengths()
 
-    def __init__(self, dataset_zip=None):
-        loc = '../datasets/dsprites/dsprites_ndarray_co1sh3sc6or40x32y32_64x64.npz'
-        if dataset_zip is None:
-            self.dataset_zip = np.load(loc, encoding='latin1')
-        else:
-            self.dataset_zip = dataset_zip
-        self.imgs = torch.from_numpy(self.dataset_zip['imgs']).float()
+    def _get_file_lengths(self):
+        """Get the length (number of samples) in each .npz file based on the length of one field (assume all fields are same length)."""
+        lengths = []
+        for file_path in self.file_paths:
+            with np.load(file_path) as data:  # Open the file and extract the length of one field (e.g., 'action')
+                lengths.append(len(data['action']))
+        return lengths
+
 
     def __len__(self):
-        return self.imgs.size(0)
-
-    def __getitem__(self, index):
-        x = self.imgs[index].view(1, 64, 64)
-        return x
+        """Returns the total number of samples across all files."""
+        return sum(self.file_lengths)
 
 
-class Pendulum(object):
-    def __init__(self, dataset_zip=None):
-        loc = 'datasets/pendulum/training_params.npz'
-        if dataset_zip is None:
-            self.dataset_zip = np.load(loc)
-        else:
-            self.dataset_zip = dataset_zip
+    def _get_file_and_local_idx(self, idx):
+        """Determine which file and index within that file corresponds to a global index."""
+        running_total = 0
+        for file_idx, length in enumerate(self.file_lengths):
+            if running_total + length > idx:
+                local_idx = idx - running_total
+                return file_idx, local_idx
+            running_total += length
 
-        self.imgs = torch.from_numpy(self.dataset_zip['obs']).float()
-        self.states = torch.from_numpy(self.dataset_zip['states']).float()
-        self.params = torch.from_numpy(self.dataset_zip['parameters']).float()
-        self.actions = torch.from_numpy(self.dataset_zip['actions']).float()
-        self.imgs = self.imgs/255
+    def __getitem__(self, idx):
+        """Gets a single sample from the dataset at the given global index."""
+        file_idx, local_idx = self._get_file_and_local_idx(idx)
+
+        # Load the specific file
+        with np.load(self.file_paths[file_idx], mmap_mode='r') as data:
+            # Extract the relevant fields for the sample
+            vis_obs = torch.tensor(data['vis_obs'][local_idx], dtype=torch.float)
+            tac_obs = torch.tensor(data['tac_obs'][local_idx], dtype=torch.float)
+            actions = torch.tensor(data['action'][local_idx], dtype=torch.float)
+            gt_labels = torch.tensor(data['gt_obs'][local_idx], dtype=torch.float)
+
+        # Return all the fields as a tuple
+        return vis_obs, tac_obs, actions, gt_labels
+
+
+class CrossModal(Dataset):
+    def __init__(self, file_paths, transform=None):
+        """
+        Args:
+           file_paths (list of str): List of file paths to load the data.
+        """
+        self.file_paths = file_paths
+        self.all_vis_obs, self.all_tac_obs, self.all_actions, self.all_gt_obs = self._load_data_into_ram()
+
+    def _load_data_into_ram(self):
+        """Load all npz files into RAM at initialization."""
+        all_actions = []
+        all_vis_obs = []
+        all_tac_obs = []
+        all_gt_obs = []
+
+        for file_path in self.file_paths:
+            with np.load(file_path) as data:
+                all_vis_obs.append(data['vis_obs'])
+                all_tac_obs.append(data['tac_obs'])
+                all_actions.append(data['action'])
+                all_gt_obs.append(data['gt_obs'])
+
+        # Convert lists of arrays into single numpy arrays
+        all_vis_obs = np.concatenate(all_vis_obs, axis=0)
+        all_tac_obs = np.concatenate(all_tac_obs, axis=0)
+        all_actions = np.concatenate(all_actions, axis=0)
+        all_gt_obs = np.concatenate(all_gt_obs, axis=0)
+
+        return (torch.tensor(all_vis_obs, dtype=torch.float16),
+                torch.tensor(all_tac_obs, dtype=torch.float16),
+                torch.tensor(all_actions, dtype=torch.float16),
+                torch.tensor(all_gt_obs, dtype=torch.float16))
+
 
     def __len__(self):
-        return self.imgs.size(0)
+        return self.all_actions.shape[0]
 
-    def __getitem__(self, index):
-        obs = self.imgs[index].view(15, 32, 32)
-        state = self.states[index].view(15, 2)
-        parameter = self.params[index].view(15, 3)
-        action = self.actions[index].view(15, 1)
-        return obs, action, state, parameter
+    def __getitem__(self, idx):
+        vis_obs = self.all_vis_obs[idx]
+        tac_obs = self.all_tac_obs[idx]
+        tac_obs = tac_obs.unsqueeze(-1)
+        action = self.all_actions[idx]
+        gt_obs = self.all_gt_obs[idx]
 
-
-class Dataset(object):
-    def __init__(self, loc):
-        self.dataset = torch.load(loc).float().div(255).view(-1, 1, 64, 64)
-
-    def __len__(self):
-        return self.dataset.size(0)
-
-    @property
-    def ndim(self):
-        return self.dataset.size(1)
-
-    def __getitem__(self, index):
-        return self.dataset[index]
-
-
-class Faces(Dataset):
-    LOC = '..datasets/basel_face_renders.pth'
-
-    def __init__(self):
-        return super(Faces, self).__init__(self.LOC)
-
+        return vis_obs, tac_obs, action, gt_obs
