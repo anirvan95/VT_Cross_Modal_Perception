@@ -15,7 +15,7 @@ torch.manual_seed(0)
 random.seed(0)
 
 # Dataset specific parameters
-vis_obs_dim = [128, 128, 2]
+vis_obs_dim = [64, 64, 2]
 tac_obs_dim = [80, 80, 1]
 action_dim = 9
 horizon = 99
@@ -91,7 +91,7 @@ class VisDecoder(nn.Module):
             nn.BatchNorm2d(32),
             nn.ReLU(),
 
-            nn.ConvTranspose2d(in_channels=32, out_channels=2, kernel_size=4, stride=4, padding=0),  # (128, 128)
+            nn.ConvTranspose2d(in_channels=32, out_channels=2, kernel_size=4, stride=2, padding=1),  # (64, 64)
             nn.Sigmoid()
         )
 

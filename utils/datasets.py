@@ -1,6 +1,13 @@
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset
+
+# Dataset specific parameters
+vis_obs_dim = [64, 64, 2]
+tac_obs_dim = [80, 80, 1]
+action_dim = 9
+horizon = 99
 
 class CrossModalAdv(Dataset):
     def __init__(self, file_paths, transform=None):
@@ -68,10 +75,19 @@ class CrossModal(Dataset):
         all_vis_obs = []
         all_tac_obs = []
         all_gt_obs = []
-
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         for file_path in self.file_paths:
             with np.load(file_path) as data:
-                all_vis_obs.append(data['vis_obs'])
+                vis_obs = data['vis_obs']  # Shape: (N, H, 128, 128, 2)
+                num_int = vis_obs.shape[0]
+                vis_obs = torch.tensor(vis_obs, dtype=torch.float16).to(device)
+                vis_obs = vis_obs.reshape(-1, 128, 128, 2)
+                vis_obs = vis_obs.permute(0, 3, 1, 2)  # Channel first
+                vis_obs = F.interpolate(vis_obs, size=(64, 64), mode='bilinear', align_corners=False)  # Rescale
+                vis_obs = vis_obs.permute(0, 2, 3, 1)  # Change back
+                vis_obs = vis_obs.reshape(num_int, horizon, 64, 64, 2)
+
+                all_vis_obs.append(vis_obs.to("cpu").numpy())
                 all_tac_obs.append(data['tac_obs'])
                 all_actions.append(data['action'])
                 all_gt_obs.append(data['gt_obs'])

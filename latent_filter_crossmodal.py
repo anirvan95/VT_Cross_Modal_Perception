@@ -13,7 +13,7 @@ torch.manual_seed(0)
 random.seed(0)
 
 # Dataset specific parameters
-vis_obs_dim = [128, 128, 2]
+vis_obs_dim = [64, 64, 2]
 tac_obs_dim = [80, 80, 1]
 action_dim = 9
 horizon = 99
@@ -84,7 +84,7 @@ class CrossModalLF(nn.Module):
             self.cuda()
 
     def get_vis_prior_params_y(self, labels):
-        vis_object_label = labels[:, 0, 0] + labels[:, 0, 1] + labels[:, 0, 2] # possible to add the interaction as well to further disentangle
+        vis_object_label = labels[:, 0, 0] + labels[:, 0, 1] + labels[:, 0, 2]
         vis_object_label = vis_object_label.to(torch.device('cuda')).long() # TODO: Fix with device selection
         vis_prior_params_mu = torch.tanh(self.vis_embedding(vis_object_label))
         vis_prior_params_sigma = torch.ones(labels.size(0), self.vis_dim_y, 1)*np.log(self.vis_y_std)
@@ -94,7 +94,7 @@ class CrossModalLF(nn.Module):
         return vis_prior_params_y
 
     def get_tac_prior_params_y(self, labels):
-        tac_object_label = labels[:, 0, 3] + labels[:, 0, 4] + labels[:, 0, 5] # possible to add the interaction as well to further disentangle
+        tac_object_label = labels[:, 0, 3] + labels[:, 0, 4] + labels[:, 0, 5]
         tac_object_label = tac_object_label.to(torch.device('cuda')).long() # TODO: Fix with device selection
         tac_prior_params_mu = torch.tanh(self.tac_embedding(tac_object_label))
         tac_prior_params_sigma = torch.ones(labels.size(0), self.tac_dim_y, 1)*np.log(self.tac_y_std)
@@ -200,7 +200,7 @@ class CrossModalLF(nn.Module):
             tac_y_params_t_1 = tac_y_params_t_1.view(batch_size, self.tac_dim_y, self.tac_q_dist_y.nparams)
             # Perform cross-modal transfer and Bayesian Integration
             vis2tac_y_params_t_1 = self.vis_y2tac_y.forward(vis_ys_t_1)
-            # TODO: condition this on learning rate
+            # TODO: condition this on learning rate, add other possible interactions here
             vis2tac_y_params_t_1 = vis2tac_y_params_t_1.view(batch_size, self.vis_dim_y, self.vis_q_dist_y.nparams)
             tac_y_params_t_1_ref = bayes_fusion(tac_y_params_t_1, vis2tac_y_params_t_1)
 

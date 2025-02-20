@@ -110,7 +110,7 @@ def main():
 
     # data loader
     print('Loading Dataset')
-    train_dir = 'dataset/cm_dataset/training'
+    train_dir = 'dataset/cm_dataset/debug'
     file_paths = sorted([os.path.join(train_dir, file) for file in os.listdir(train_dir) if file.endswith('.npz')])
     dataset = CrossModal(file_paths)
     print('Done')
