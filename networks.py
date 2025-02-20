@@ -1,3 +1,4 @@
+# Helper file to implement all the DL models used
 import numpy as np
 import random
 
@@ -19,7 +20,7 @@ tac_obs_dim = [80, 80, 1]
 action_dim = 9
 horizon = 99
 
-# ################################################ DL Model Definition ################################################
+
 class VisEncoder(nn.Module):
     """
     CNN+FC visual encoder
@@ -192,6 +193,48 @@ class MLPTransition(nn.Module):
         z = h.view(x.size(0), self.output_dim)
         return z
 
+class MLPTransitionV2(nn.Module):
+    """
+    MLP Transition function to model the non-linear dynamics for the cross modal
+    """
+    def __init__(self, input_dim, output_dim):
+        super(MLPTransitionV2, self).__init__()
+        self.output_dim = output_dim
+        self.input_dim = input_dim
+        self.fc1 = nn.Linear(input_dim, 32)
+        self.fc2 = nn.Linear(32, 16)
+        self.fc3 = nn.Linear(16, output_dim)
+
+        # Setup the non-linearity
+        self.act = nn.ReLU()
+
+    def forward(self, x):
+        h = self.act(self.fc1(x))
+        h = self.act(self.fc2(h))
+        h = self.fc3(h)
+        z = h.view(x.size(0), self.output_dim)
+        return z
+
+class CMFunction(nn.Module):
+    """
+    MLP Cross Modal function to model the transfer function between latent space
+    """
+    def __init__(self, input_dim, output_dim):
+        super(CMFunction, self).__init__()
+        self.output_dim = output_dim
+        self.input_dim = input_dim
+        self.fc1 = nn.Linear(input_dim, 16)
+        self.fc2 = nn.Linear(16, output_dim)
+
+        # Setup the non-linearity
+        self.act = nn.ReLU()
+
+    def forward(self, a):
+        h = self.act(self.fc1(a))
+        h = self.fc2(h)
+        b = h.view(a.size(0), self.output_dim)
+        return b
+
 class LSTMEncode(nn.Module):
     def __init__(self, input_size, hidden_size, output_size):
         super(LSTMEncode, self).__init__()
@@ -241,7 +284,7 @@ class LSTMEncode(nn.Module):
 
         return x_t, (h_t, c_t)
 
-# ###################################### Latent Filter Definition #####################################################
+
 class VAE(nn.Module):
     def __init__(self, dim_z, std=0.75, modality='vision', use_cuda=True):
         super(VAE, self).__init__()
@@ -302,161 +345,3 @@ class VAE(nn.Module):
         x_params = self.decoder.forward(z)
         xs = self.x_dist.sample(params=x_params)
         return xs, x_params
-
-
-class UniModalLF(nn.Module):
-    def __init__(self, args):
-        super(UniModalLF, self).__init__()
-        self.dim_z = args.dim_z
-        self.dim_y = args.dim_y
-        self.dim_h = args.dim_h
-        self.dim_a = action_dim
-
-        self.x_std = args.stdx
-        self.y_std = args.stdy
-
-        self.modality = args.modality
-        self.horizon = horizon
-
-        # distribution family of p(y)
-        self.prior_dist_y = dist.Normal()
-        self.q_dist_y = dist.Normal()
-        # hyperparameters for prior p(z) - Hierarchical prior or Normal prior
-        # self.register_buffer('prior_params_y', torch.zeros(self.dim_y, 2))
-        self.embedding = nn.Embedding(num_embeddings=args.num_objects, embedding_dim=self.dim_y)
-        # Recognition Model  - Visual Encoder & Decoder
-        self.vae = VAE(dim_z=self.dim_z, std=self.x_std, modality=self.modality, use_cuda=args.use_cuda)
-
-        # Recognition Model - Hidden States LSTM Network to identify hidden properties from changing state space z
-        self.y_net = LSTMEncode(input_size=self.dim_z + self.dim_a, hidden_size=self.dim_h, output_size=self.dim_y * self.q_dist_y.nparams)
-
-        # Transition Network, computes TRANSITION (from previous visual state z, inferred y (time-invariant properties) and action)
-        self.transition_net = MLPTransition(input_dim=self.dim_z + self.dim_y + self.dim_a, output_dim=self.dim_z * self.vae.q_dist.nparams)
-
-        if args.use_cuda:
-            # calling cuda() here will put all the parameters of
-            # the encoder and decoder networks into gpu memory
-            self.cuda()
-
-    def get_prior_params_y(self, labels):
-        object_label = labels[:, 0, 0] + labels[:, 0, 1] + labels[:, 0, 2] # possible to add the interaction as well to further disentangle
-        object_label = object_label.to(torch.device('cuda')).long() # TODO: Fix with device selection
-        prior_params_mu = torch.tanh(self.embedding(object_label))
-        prior_params_sigma = torch.ones(labels.size(0), self.dim_y, 1)*np.log(self.y_std)
-        prior_params_sigma = prior_params_sigma.to('cuda')
-        prior_params_y = torch.cat((prior_params_mu[:, :, None], prior_params_sigma), dim=-1)
-
-        return prior_params_y
-
-    def filter(self, x, u, labels, H):
-        batch_size, T, _ = u.shape
-
-        # Set the hidden layer of the LSTM to zero
-        hidden_y_t = (torch.zeros(batch_size, self.dim_h, device='cuda'),
-                      torch.zeros(batch_size, self.dim_h, device='cuda'))
-
-        # Define the variables to store the filtering output
-        prior_params_y_f = []
-        y_params_f = []
-        ys_f = []
-        hs_f = []
-        cs_f = []
-        prior_params_z_f = []
-        z_params_f = []
-        zs_f = []
-        x_hat_params_f = []
-        xs_hat_f = []
-        x_f = []
-
-        # Convention
-        # t = previous time step
-        # t_1 = current time step
-
-        # First time step is handled differently
-        # Obtain the measurement latent space
-        zs_meas_t, z_meas_params_t = self.vae.encode(x[:, 0])
-        prior_params_z_t = self.vae.get_prior_params(batch_size)  # only for 1st time step
-
-        zs_t = zs_meas_t
-        z_params_t = z_meas_params_t
-
-        xs_hat_t, x_hat_params_t = self.vae.decode(zs_t)
-
-        prior_params_z_f.append(prior_params_z_t)
-        z_params_f.append(z_params_t)
-        zs_f.append(zs_t)
-        xs_hat_f.append(xs_hat_t)
-        x_hat_params_f.append(x_hat_params_t)
-        x_f.append(x[:, 0])
-
-        # Transfer the prior params z_t
-        prior_params_y_t_1 = self.get_prior_params_y(labels)
-
-        for t in range(1, T):  # Note the time index starts from 0 due to the correct control index
-            u_t_1 = u[:, t]
-            u_t = u[:, t - 1]
-            x_t_1 = x[:, t]
-
-            y_params_t_1, hidden_y_t_1 = self.y_net.forward(torch.cat([zs_t, u_t], dim=-1), hidden_y_t)
-            y_params_t_1 = y_params_t_1.view(batch_size, self.dim_y, self.q_dist_y.nparams)
-
-            # Sample the latent code y
-            ys_t_1 = self.q_dist_y.sample(params=y_params_t_1)
-
-            # Obtain the next step z's
-            z_trans_params_t_1 = self.transition_net.forward(torch.cat([zs_t, u_t_1, ys_t_1], dim=-1))
-            z_trans_params_t_1 = z_trans_params_t_1.view(batch_size, self.dim_z, self.vae.q_dist.nparams)
-
-            zs_meas_t_1, z_meas_params_t_1 = self.vae.encode(x_t_1)
-            # z_params_t_1 = z_trans_params_t_1 # without Bayes Integration
-            z_params_t_1 = bayes_fusion(z_trans_params_t_1, z_meas_params_t_1)
-
-            # Pass through the decoder
-            zs_t_1 = self.vae.q_dist.sample(params=z_params_t_1)
-            xs_hat_t_1, x_hat_params_t_1 = self.vae.decode(zs_t_1)
-
-            # Save the parameters
-            prior_params_y_f.append(prior_params_y_t_1)
-            y_params_f.append(y_params_t_1)
-            ys_f.append(ys_t_1)
-
-            prior_params_z_f.append(prior_params_z_t)
-            z_params_f.append(z_params_t_1)
-            zs_f.append(zs_t_1)
-
-            xs_hat_f.append(xs_hat_t_1)
-            x_hat_params_f.append(x_hat_params_t_1)
-            x_f.append(x_t_1)
-
-            h, c = hidden_y_t
-            hs_f.append(h)
-            cs_f.append(c)
-
-            hidden_y_t = hidden_y_t_1
-            zs_t = zs_t_1
-            prior_params_z_t = z_params_t_1
-
-        return prior_params_y_f, y_params_f, ys_f, prior_params_z_f, z_params_f, zs_f, xs_hat_f, x_hat_params_f, x_f, hs_f, cs_f
-
-
-class CrossModalLF(nn.Module):
-    def __init__(self, args):
-        super(CrossModalLF, self).__init__()
-        self.vis_dim_z = args.vis_dim_z
-        self.vis_lf = [] # create visual latent filter by calling UniModalLF()
-        self.tac_lf = []
-
-    def cross_modal_filter(self):
-        # TODO: Add the cross modal filtering step by 24th Feb.
-        print('cross_modal_filter implementation in progress')
-
-class MultiModalLF(nn.Module):
-    def __init__(self, args):
-        super(MultiModalLF, self).__init__()
-        self.vis_dim_z = args.vis_dim_z
-        self.vis_lf = [] # create visual latent filter by calling UniModalLF()
-        self.tac_lf = []
-
-    def multimodal_filter(self):
-        # TODO: Add the multi modal filtering step.
-        print('Baseline multi_modal_filter implementation in progress, no with merged space')

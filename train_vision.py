@@ -9,7 +9,7 @@ import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
 import utils.compute_utils as utils
-from latent_filter import UniModalLF
+from latent_filter_unimodal import UniModalLF
 from utils.datasets import CrossModal
 from utils.plot_latent import extract_test_cases, plot_lf, save_lf
 
