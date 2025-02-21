@@ -6,34 +6,10 @@ from mpl_toolkits.mplot3d import Axes3D
 import seaborn as sns
 from scipy.spatial.distance import pdist, squareform
 import torch
+import random
 import numpy as np
 import imageio
 import umap
-
-VAR_THRESHOLD = 1e-4
-latent_walks = 15
-horizon = 26  # 1 Hz
-action_dim = 2 # pose + param
-obs_dim = [30, 30, 2] # Spatial and Vibration
-
-win_samples = None
-win_test_reco = None
-win_latent_walk = None
-win_train_elbo = None
-win_correlation = None
-win_space = None
-win_static_correlation = None
-win_dynamic_correlation = None
-win_space_z = None
-win_space_y = None
-win_embed_space_z = None
-win_embed_space_y = None
-win_space_h = None
-win_embed_space_h = None
-
-win_label = None
-win_test_reco = None
-loss = torch.nn.MSELoss()
 
 layout_def = {
     'scene': {
@@ -43,16 +19,24 @@ layout_def = {
     }
 }
 
-def generate_gradient_colors(N):
-    t = np.linspace(0, 1, N)
-    red = np.interp(t, [0, 0.5, 1], [255, 0, 0])
-    green = np.interp(t, [0, 0.5, 1], [0, 255, 0])
-    blue = np.interp(t, [0, 0.5, 1], [0, 0, 255])
+# Seeding for reproducibility
+np.random.seed(0)
+torch.manual_seed(0)
+random.seed(0)
 
-    colors = np.column_stack((red, green, blue))
-    colors = colors.astype(int)
+# Dataset specific parameters
+vis_obs_dim = [64, 64, 2]
+tac_obs_dim = [80, 80, 1]
+action_dim = 9
+horizon = 99
 
-    return colors
+win_vis_test_reco = None
+win_tac_test_reco = None
+vis_win_space_y = None
+tac_win_space_y = None
+vis_win_space_z = None
+tac_win_space_z = None
+win_label = None
 
 def compute_distances(features, labels):
     unique_classes = np.unique(labels)
@@ -84,260 +68,201 @@ def compute_distances(features, labels):
 
     return distance_matrix, unique_classes
 
-def extract_test_cases(test_loader):
-    xf = []
-    af = []
-    labelf = []
+
+def validate_cmlf(test_loader, cmlf, out_dir, H, iteration, save_plot=False, show_plot=False, vis=None):
     first = True
-    # Extract test cases from the whole batch
-    for i, values in enumerate(test_loader):
-        obs, action, label = values
-        if first:
-            xf = obs[0:1, :, :, :, :]
-            af = action[0:1, :, :]
-            labelf = label[0:1, :, :]
-            first = False
-        else:
-            xf = torch.cat([xf, obs[0:1, :, :, :, :]], dim=0)
-            af = torch.cat([af, action[0:1, :, :]], dim=0)
-            labelf = torch.cat([labelf, label[0:1, :, :]], dim=0)
+    with torch.no_grad():
+        for i, values in enumerate(test_loader):
+            vis_obs, tac_obs, actions, labels = values
 
-    batch_size, T, _ = af.shape
-    x = xf
-    color_vals = []
-    label_ind = []
+            vis_obs = vis_obs.cuda().to(dtype=torch.float32)
+            tac_obs = tac_obs.cuda().to(dtype=torch.float32)
+            actions = actions.cuda().to(dtype=torch.float32)
+            labels = labels.cuda().to(dtype=torch.float32)
+
+            object_labels = labels[:, :, 6:]  # Required for hierarchical prior, contrastive version is more general
+            pose_labels = labels[:, :, :6]  # GT Pose of the object
+
+            (vis_prior_params_y_f, vis_y_params_f, vis_ys_f, vis_prior_params_z_f, vis_z_params_f, vis_zs_f, vis_xs_hat_f,
+             vis_x_hat_params_f, vis_x_f, vis_hs_f, vis_cs_f,
+             tac_prior_params_y_f, tac_y_params_f, tac_ys_f, tac_prior_params_z_f, tac_z_params_f, tac_zs_f, tac_xs_hat_f,
+             tac_x_hat_params_f, tac_x_f, tac_hs_f, tac_cs_f) = cmlf.filter(vis_obs, tac_obs, actions, object_labels, H)
+
+            # Move results to CPU to reduce GPU memory usage
+            vis_y_params_f = torch.stack(vis_y_params_f, dim=1).cpu()
+            vis_z_params_f = torch.stack(vis_z_params_f, dim=1).cpu()
+            vis_x_recon_f = torch.stack(vis_xs_hat_f, dim=1).cpu()
+            x_gt_f = torch.stack(vis_x_f, dim=1).cpu()
+            tac_y_params_f = torch.stack(tac_y_params_f, dim=1).cpu()
+            tac_z_params_f = torch.stack(tac_z_params_f, dim=1).cpu()
+            tac_x_recon_f = torch.stack(tac_xs_hat_f, dim=1).cpu()
+            tac_gt_f = torch.stack(tac_x_f, dim=1).cpu()
+
+            if first:
+                vis_y_params, vis_z_params, vis_x_recons, vis_x_gts = vis_y_params_f, vis_z_params_f, vis_x_recon_f, x_gt_f
+                tac_y_params, tac_z_params, tac_x_recons, tac_x_gts = tac_y_params_f, tac_z_params_f, tac_x_recon_f, tac_gt_f
+                labels_test = object_labels.cpu()
+                first = False
+            else:
+                vis_y_params = torch.cat((vis_y_params, vis_y_params_f), dim=0)
+                vis_z_params = torch.cat((vis_z_params, vis_z_params_f), dim=0)
+                vis_x_recons = torch.cat((vis_x_recons, vis_x_recon_f), dim=0)
+                vis_x_gts = torch.cat((vis_x_gts, x_gt_f), dim=0)
+                tac_y_params = torch.cat((tac_y_params, tac_y_params_f), dim=0)
+                tac_z_params = torch.cat((tac_z_params, tac_z_params_f), dim=0)
+                tac_x_recons = torch.cat((tac_x_recons, tac_x_recon_f), dim=0)
+                tac_x_gts = torch.cat((tac_x_gts, tac_gt_f), dim=0)
+                labels_test = torch.cat((labels_test, object_labels.cpu()), dim=0)
+
+    num_test_samples = labels_test.shape[0]
+    object_ind = ((labels_test[:, :, 0]-1)*15 + (labels_test[:, :, 1]-1)*5 + (labels_test[:, :, 2]-1))
+    object_ind = object_ind.reshape(-1)
     cmap1 = plt.get_cmap('tab20b')
-    cmap2 = plt.get_cmap('tab20c')
-    for i in range(labelf.shape[0]):
-        object_label = labelf[i, 0, 0]
-        col = cmap1(object_label / 27)
-        col_rgb = np.array([col[0], col[1], col[2]]) * 255
-        for j in range(0, horizon):
-            label_ind.append(object_label)
-            col_lighter = col_rgb
-            color_vals.append(np.array([col_lighter[0], col_lighter[1], col_lighter[2]]))
+    color_vals =  cmap1(object_ind.numpy() / 75)
+    color_vals = color_vals[:, 0:3]
+    color_vals = color_vals.reshape(num_test_samples, horizon, 3)
+    test_object_labels = object_ind.reshape(num_test_samples, horizon)
 
-    label_ind = np.array(label_ind)
-    indices = np.arange(0, label_ind.shape[0])
+    if show_plot:
+        global win_label
+        label_scatter = test_object_labels.reshape(-1).numpy()
+        label_ind = np.arange(num_test_samples*horizon)
+        label_scatter = np.concatenate((label_ind[:, None], label_scatter[:, None]), axis=-1)
+        color_scatter = color_vals.reshape(num_test_samples*horizon, 3)
+        color_scatter = color_scatter * 255
+        color_scatter = color_scatter.astype(int)
+        win_label = vis.scatter(label_scatter, opts={'caption': 'labels', 'markercolor': color_scatter, 'markersize': 10}, win=win_label)
 
-    color_vals = np.array(color_vals)
-    color_vals = color_vals.astype(int)
-    label_scatter = torch.concat([torch.from_numpy(indices[:, None]), torch.from_numpy(label_ind[:, None])], axis=-1)
+    vis_recon_mean = torch.mean(vis_x_recons, dim=(2, 3, 4))
+    vis_gt_mean = torch.mean(vis_x_gts, dim=(2, 3, 4))
 
-    return x, af, labelf, label_scatter, color_vals
-
-
-def plot_vae(vae, vis, x, u, labels, label_scatter, color_vals):
-    global win_test_reco, win_label, win_space_z, win_embed_space_z
-
-    x = x.cuda()
-    x = x.view(-1, 30, 30, 2)
-    batch_size = x.size(0)
-
-    with torch.no_grad():
-        zs, z_params = vae.encode(x)
-        xs, x_params = vae.decode(zs)
-
-    # #################################### Plot few reconstruction of the tactile data #################################################
-    print('MSE Loss -', loss(xs, x).cpu().numpy())
-
-    fig, ax = plt.subplots(3, 3, figsize=(5, 5))
-    # Plot mean reconstruction
-    tactile_recon_mean = torch.mean(xs, dim=(1,3))
-    tactile_recon_gt = torch.mean(x, dim=(1,3))
-
-    index = 0
-    for i in range(3):
-        for j in range(3):
-            ax[i, j].plot(tactile_recon_mean[index, :].cpu().detach(), '.r')
-            ax[i, j].plot(tactile_recon_gt[index, :].cpu().detach(), '.b')
-            index += int(x.shape[0] / 9)  # 9 the samples
-    win_test_reco = vis.matplot(plt, win=win_test_reco)
-    plt.close()
-
-    # #################################### Plot the latent space #################################################
-    qz_means = z_params[:, :, 0].cpu()
-
-    z_embedded = umap.UMAP(n_components=2).fit_transform(qz_means.numpy())
-    z_embedded = np.concatenate([z_embedded, np.zeros([batch_size, 1])], axis=-1)
-    var_z = torch.std(qz_means.contiguous(), dim=0).pow(2)
-    var_sort, dim_z = torch.sort(var_z)
-    # print('Z Var: ', var_sort)
-    qz_means_inf = qz_means[:, dim_z[-3:]]
-    color_vals_z = color_vals
-    win_space_z = vis.scatter(qz_means_inf,
-                              opts={'caption': 'latent z space', 'markercolor': color_vals_z, 'markersize': 2,
-                                    'layout': layout_def},
-                              win=win_space_z)
-
-    win_embed_space_z = vis.scatter(z_embedded,
-                                    opts={'caption': 'latent z space', 'markercolor': color_vals_z, 'markersize': 2,
-                                          'layout': layout_def},
-                                    win=win_embed_space_z)
-
-    win_label = vis.scatter(label_scatter, opts={'caption': 'labels', 'markercolor': color_vals, 'markersize': 10},
-                            win=win_label)
-
-
-
-def plot_lf(dvbf, vis, x, u, labels, label_scatter, color_vals):
-    global win_space_y, win_test_reco, win_label, win_space_z, win_embed_space_y, win_embed_space_z, win_embed_space_h
-
-    x = x.cuda()
-    u = u.cuda()
-    labels = labels.cuda()
-    batch_size = x.shape[0]
-    with torch.no_grad():
-        prior_params_y_f, y_params_f, ys_f, prior_params_z_f, z_params_f, zs_f, xs_hat_f, x_hat_params_f, x_f, hs_f, cs_f = dvbf.filter(x, u, labels, H=1)
-
-    y_params = torch.stack(y_params_f, dim=1)
-    z_params = torch.stack(z_params_f, dim=1)
-    x_recon = torch.stack(xs_hat_f, dim=1)
-
-    # #################################### Plot few reconstruction of the tactile data #################################################
-    print('MSE Loss -', loss(x_recon, x).cpu().numpy())
-    # Plot mean reconstruction
-    tactile_recon_mean = torch.mean(x_recon, dim=(2, 3, 4))
-    tactile_recon_gt = torch.mean(x, dim=(2, 3, 4))
+    tactile_recon_mean = torch.mean(tac_x_recons, dim=(2, 3, 4))
+    tactile_gt_mean = torch.mean(tac_x_gts, dim=(2, 3, 4))
+    '''
+    # ############################################### Plot reconstruction #############################################
+    # #################################################### Vision #####################################################
     fig, ax = plt.subplots(3, 3, figsize=(5, 5))
     index = 0
     for i in range(3):
         for j in range(3):
-            ax[i, j].plot(tactile_recon_mean[index, :].cpu().detach(), '.r')
-            ax[i, j].plot(tactile_recon_gt[index, :].cpu().detach(), '.b')
-            index += int(x.shape[0] / 9)  # 9 the samples
-    win_test_reco = vis.matplot(plt, win=win_test_reco)
-    plt.close()
+            ax[i, j].plot(vis_recon_mean[index, :].detach().numpy(), '.r')
+            ax[i, j].plot(vis_gt_mean[index, :].detach(), '.b')
+            index += int(num_test_samples / 9)  # 9 the samples
 
-    # #################################### Plot the latent space #################################################
-    # time_indx = np.arange(0, 26)  # Plot the inferred last time steps of the latent
-    y_params = y_params.cpu()
-    qy_means = y_params[:, :, :, 0]
-    qy_means = qy_means.reshape(y_params.shape[0]*(horizon-1), dvbf.dim_y)
-
-    #y_embedded = umap.UMAP(n_components=2).fit_transform(qy_means.numpy())
-    #y_embedded = np.concatenate([y_embedded, np.zeros([batch_size*(horizon-1), 1])], axis=-1)
-    var_y = torch.std(qy_means.contiguous(), dim=0).pow(2)
-    var_sort, dim_y = torch.sort(var_y)
-    # print('Y Var: ', var_sort)
-    qy_means_inf = qy_means[:, dim_y[-3:]]
-    color_vals_y = color_vals.reshape([batch_size, horizon, 3])
-    color_vals_y = color_vals_y[:, 0:-1, :]
-    color_vals_y = color_vals_y.reshape([batch_size*(horizon-1), 3])
-    win_space_y = vis.scatter(qy_means_inf,
-                              opts={'caption': 'latent y space', 'markercolor': color_vals_y, 'markersize': 2.5,
-                                    'layout': layout_def},
-                              win=win_space_y)
-    '''
-    win_embed_space_y = vis.scatter(y_embedded,
-                                    opts={'caption': 'latent y space', 'markercolor': color_vals_y, 'markersize': 2.5,
-                                          'layout': layout_def},
-                                    win=win_embed_space_y)
-    '''
-    z_params = z_params.cpu()
-    qz_means = z_params[:, :, :, 0]
-    qz_means = qz_means.reshape(z_params.shape[0] * horizon, z_params.shape[-2])
-
-    #z_embedded = umap.UMAP(n_components=2).fit_transform(qz_means.numpy())
-    #z_embedded = np.concatenate([z_embedded, np.zeros([batch_size*horizon, 1])], axis=-1)
-    var_z = torch.std(qz_means.contiguous(), dim=0).pow(2)
-    var_sort, dim_z = torch.sort(var_z)
-    # print('Z Var: ', var_sort)
-    qz_means_inf = qz_means[:, dim_z[-3:]]
-
-    win_space_z = vis.scatter(qz_means_inf,
-                              opts={'caption': 'latent z space', 'markercolor': color_vals, 'markersize': 2, 'layout': layout_def},
-                              win=win_space_z)
-    '''
-    win_embed_space_z = vis.scatter(z_embedded,
-                              opts={'caption': 'latent z space', 'markercolor': color_vals, 'markersize': 2, 'layout': layout_def},
-                              win=win_embed_space_z)
-    '''
-
-
-def save_lf(dvbf, x, u, labels, label_scatter, color_vals, iteration, out_dir):
-
-    x = x.cuda()
-    u = u.cuda()
-    labels = labels.cuda()
-    batch_size = x.shape[0]
-    with torch.no_grad():
-        prior_params_y_f, y_params_f, ys_f, prior_params_z_f, z_params_f, zs_f, xs_hat_f, x_hat_params_f, x_f, hs_f, cs_f = dvbf.filter(x, u, labels, H=1)
-
-    y_params = torch.stack(y_params_f, dim=1)
-    z_params = torch.stack(z_params_f, dim=1)
-    x_recon = torch.stack(xs_hat_f, dim=1)
-
-    # #################################### Plot few reconstruction of the tactile data #################################################
-    # print('MSE Loss -', loss(x_recon, x).cpu().numpy())
-    # Plot mean reconstruction
-    tactile_recon_mean = torch.mean(x_recon, dim=(2, 3, 4))
-    tactile_recon_gt = torch.mean(x, dim=(2, 3, 4))
+    if show_plot:
+        global win_vis_test_reco
+        win_vis_test_reco = vis.matplot(plt, win=win_vis_test_reco)
+        plt.close()
+    elif save_plot:
+        recon_fig_name = os.path.join(out_dir, 'vis_reconstructed_' + str(iteration) + '.png')
+        plt.savefig(recon_fig_name)
+        plt.close()
+    # #################################################### Tactile ####################################################
     fig, ax = plt.subplots(3, 3, figsize=(5, 5))
     index = 0
     for i in range(3):
         for j in range(3):
-            ax[i, j].plot(tactile_recon_mean[index, :].cpu().detach(), '.r')
-            ax[i, j].plot(tactile_recon_gt[index, :].cpu().detach(), '.b')
-            index += int(x.shape[0] / 9)  # 9 the samples
-    recon_fig_name = os.path.join(out_dir, 'reconstructed_'+str(iteration)+'.png')
-    plt.savefig(recon_fig_name)
-    plt.close()
+            ax[i, j].plot(tactile_recon_mean[index, :].detach(), '.c')
+            ax[i, j].plot(tactile_gt_mean[index, :].cpu().detach(), '.m')
+            index += int(num_test_samples / 9)  # 9 the samples
 
-    # #################################### Plot the latent space #################################################
-    # time_indx = np.arange(0, 26)  # Plot the inferred last time steps of the latent
-    y_params = y_params.cpu()
-    qy_means = y_params[:, :, :, 0]
-    qy_means = qy_means.reshape(y_params.shape[0]*(horizon-1), dvbf.dim_y)
+    if show_plot:
+        global win_tac_test_reco
+        win_tac_test_reco = vis.matplot(plt, win=win_tac_test_reco)
+        plt.close()
+    elif save_plot:
+        recon_fig_name = os.path.join(out_dir, 'tac_reconstructed_' + str(iteration) + '.png')
+        plt.savefig(recon_fig_name)
+        plt.close()
+    '''
+    # ############################################### Plot Y-Latent Space #############################################
+    color_vals_y = color_vals[:, 0:-1, :]
+    color_vals_y = color_vals_y.reshape(num_test_samples * (horizon - 1), 3)
+    color_vals_y_visdom = color_vals_y*255
+    color_vals_y_visdom = color_vals_y_visdom.astype(int)
+    # #################################################### Vision #####################################################
+    vis_qy_means = vis_y_params[:, :, :, 0]
+    vis_qy_means = vis_qy_means.reshape(num_test_samples * (horizon - 1), cmlf.vis_dim_y)
+    vis_var_y = torch.std(vis_qy_means.contiguous(), dim=0).pow(2)
+    var_sort, dim_y = torch.sort(vis_var_y)
+    vis_qy_means_inf = vis_qy_means[:, dim_y[-3:]]
+    if show_plot:
+        global vis_win_space_y
+        vis_win_space_y = vis.scatter(vis_qy_means_inf,
+                                  opts={'caption': 'latent vis y space', 'markercolor': color_vals_y_visdom, 'markersize': 2.5,
+                                        'layout': layout_def},
+                                  win=vis_win_space_y)
+    elif save_plot:
+        fig = plt.figure(figsize=(10, 8))
+        ax = fig.add_subplot(111, projection='3d')
+        ax.scatter(vis_qy_means_inf[:, 0], vis_qy_means_inf[:, 1], vis_qy_means_inf[:, 2], c=color_vals_y, s=10)
+        plt.savefig(os.path.join(out_dir, 'vis_latent_y_space_'+str(iteration)+'.png'))
+        plt.close()
 
-    #y_embedded = umap.UMAP(n_components=2).fit_transform(qy_means.numpy())
-    #y_embedded = np.concatenate([y_embedded, np.zeros([batch_size*(horizon-1), 1])], axis=-1)
-    var_y = torch.std(qy_means.contiguous(), dim=0).pow(2)
-    var_sort, dim_y = torch.sort(var_y)
-    # print('Y Var: ', var_sort)
-    qy_means_inf = qy_means[:, dim_y[-3:]]
-    color_vals_y = color_vals.reshape([batch_size, horizon, 3])
-    color_vals_y = color_vals_y[:, 0:-1, :]
-    color_vals_y = color_vals_y.reshape([batch_size*(horizon-1), 3])
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(111, projection='3d')
-    ax.scatter(qy_means_inf[:, 0], qy_means_inf[:, 1], qy_means_inf[:, 2], c=color_vals_y/255, s=10)
-    plt.savefig(os.path.join(out_dir, 'latent_y_space_'+str(iteration)+'.png'))
-    plt.close()
+    # #################################################### Tactile #####################################################
+    tac_qy_means = tac_y_params[:, :, :, 0]
+    tac_qy_means = tac_qy_means.reshape(num_test_samples * (horizon - 1), cmlf.tac_dim_y)
+    tac_var_y = torch.std(tac_qy_means.contiguous(), dim=0).pow(2)
+    var_sort, dim_y = torch.sort(tac_var_y)
+    tac_qy_means_inf = tac_qy_means[:, dim_y[-3:]]
+    if show_plot:
+        global tac_win_space_y
+        tac_win_space_y = vis.scatter(tac_qy_means_inf,
+                                      opts={'caption': 'latent vis y space', 'markercolor': color_vals_y_visdom,
+                                            'markersize': 2.0,
+                                            'layout': layout_def},
+                                      win=tac_win_space_y)
+    elif save_plot:
+        fig = plt.figure(figsize=(10, 8))
+        ax = fig.add_subplot(111, projection='3d')
+        ax.scatter(tac_qy_means_inf[:, 0], tac_qy_means_inf[:, 1], tac_qy_means_inf[:, 2], c=color_vals_y, s=10)
+        plt.savefig(os.path.join(out_dir, 'tac_latent_y_space_' + str(iteration) + '.png'))
+        plt.close()
 
-    z_params = z_params.cpu()
-    qz_means = z_params[:, :, :, 0]
-    qz_means = qz_means.reshape(z_params.shape[0] * horizon, z_params.shape[-2])
+    # ############################################### Plot Z-Latent Space #############################################
+    color_vals_z = color_vals.reshape(num_test_samples*horizon, 3)
+    color_vals_z_visdom = color_vals_z*255
+    color_vals_z_visdom = color_vals_z_visdom.astype(int)
+    # #################################################### Vision #####################################################
+    vis_qz_means = vis_z_params[:, :, :, 0]
+    vis_qz_means = vis_qz_means.reshape(num_test_samples * horizon, cmlf.vis_dim_z)
+    vis_var_z = torch.std(vis_qz_means.contiguous(), dim=0).pow(2)
+    vis_var_sort, dim_z = torch.sort(vis_var_z)
+    vis_qz_means_inf = vis_qz_means[:, dim_z[-3:]]
+    if show_plot:
+        global vis_win_space_z
+        vis_win_space_z = vis.scatter(vis_qz_means_inf,
+                                      opts={'caption': 'latent vis z space', 'markercolor': color_vals_z_visdom,
+                                            'markersize': 2.5,
+                                            'layout': layout_def},
+                                      win=vis_win_space_z)
+    elif save_plot:
+        fig = plt.figure(figsize=(10, 8))
+        ax = fig.add_subplot(111, projection='3d')
+        ax.scatter(vis_qz_means_inf[:, 0], vis_qz_means_inf[:, 1], vis_qz_means_inf[:, 2], c=color_vals_z, s=10)
+        plt.savefig(os.path.join(out_dir, 'vis_latent_z_space_' + str(iteration) + '.png'))
+        plt.close()
 
-    #z_embedded = umap.UMAP(n_components=2).fit_transform(qz_means.numpy())
-    #z_embedded = np.concatenate([z_embedded, np.zeros([batch_size*horizon, 1])], axis=-1)
-    var_z = torch.std(qz_means.contiguous(), dim=0).pow(2)
-    var_sort, dim_z = torch.sort(var_z)
-    # print('Z Var: ', var_sort)
-    qz_means_inf = qz_means[:, dim_z[-3:]]
+    # #################################################### Vision #####################################################
+    tac_qz_means = tac_z_params[:, :, :, 0]
+    tac_qz_means = tac_qz_means.reshape(num_test_samples * horizon, cmlf.tac_dim_z)
+    tac_var_z = torch.std(tac_qz_means.contiguous(), dim=0).pow(2)
+    tac_var_sort, dim_z = torch.sort(tac_var_z)
+    tac_qz_means_inf = tac_qz_means[:, dim_z[-3:]]
+    if show_plot:
+        global tac_win_space_z
+        tac_win_space_z = vis.scatter(tac_qz_means_inf,
+                                      opts={'caption': 'latent vis z space', 'markercolor': color_vals_z_visdom,
+                                            'markersize': 2.0,
+                                            'layout': layout_def},
+                                      win=tac_win_space_z)
+    elif save_plot:
+        fig = plt.figure(figsize=(10, 8))
+        ax = fig.add_subplot(111, projection='3d')
+        ax.scatter(tac_qz_means_inf[:, 0], tac_qz_means_inf[:, 1], tac_qz_means_inf[:, 2], c=color_vals_z, s=10)
+        plt.savefig(os.path.join(out_dir, 'tac_latent_z_space_' + str(iteration) + '.png'))
+        plt.close()
 
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(111, projection='3d')
-    ax.scatter(qz_means_inf[:, 0], qz_means_inf[:, 1], qz_means_inf[:, 2], c=color_vals/255, s=5)
-    plt.savefig(os.path.join(out_dir, 'latent_z_space_' + str(iteration) + '.png'))
-    plt.close()
-
-    # Perform quick distance computation of the last time steps
-
-    features_np = torch.concat([z_params[:, -2:-1, :, 0:1], y_params[:, -2:-1, :, 0:1]], axis=2)
-    features_np = features_np[:, 0, :, 0]
-    features_np = features_np.cpu().detach().numpy()
-    labels_np = labels[:, -1, 0]
-    labels_np = labels_np.cpu().detach().numpy()
-    distance_matrix, unique_classes = compute_distances(features_np, labels_np)
-    plt.figure(figsize=(15, 10))
-    sns.heatmap(distance_matrix, annot=True, cmap='coolwarm', xticklabels=unique_classes, yticklabels=unique_classes)
-    plt.gca().invert_yaxis()
-    plt.title('Distance Matrix (Intra-Class on Diagonal, Inter-Class Off-Diagonal)')
-    plt.xlabel('Class Label')
-    plt.ylabel('Class Label')
-    plt.savefig(os.path.join(out_dir, 'distance_metric_' + str(iteration) + '.png'))
-    plt.close()
 
 
 def format(x):
@@ -346,6 +271,7 @@ def format(x):
 
 
 def display_video(x, x_recon, filename):
+    # TODO: Fix display video for presentation
     T = 14
     frames = []
     for i in range(T):

@@ -66,7 +66,6 @@ class CrossModalLF(nn.Module):
         self.tac_y_net = LSTMEncode(input_size=self.tac_dim_z + self.dim_a, hidden_size=self.tac_dim_h,
                                     output_size=self.tac_dim_y * self.tac_q_dist_y.nparams)
 
-
         # ##############################################################################################################
         # Cross Modal Transfer Functions (For now only vision to tactile in y space)
         self.vis_y2tac_y = CMFunction(input_dim=self.vis_dim_y, output_dim=self.tac_dim_y * self.tac_q_dist_y.nparams)
@@ -77,28 +76,25 @@ class CrossModalLF(nn.Module):
         self.transition_net = MLPTransitionV2(input_dim=self.vis_dim_z + self.vis_dim_y + self.tac_dim_z + self.tac_dim_y +self.dim_a,
                                             output_dim=self.vis_dim_z * self.vis_vae.q_dist.nparams + self.tac_dim_z * self.tac_vae.q_dist.nparams)
 
-
         if args.use_cuda:
             # calling cuda() here will put all the parameters of
             # the encoder and decoder networks into gpu memory
             self.cuda()
 
     def get_vis_prior_params_y(self, labels):
-        vis_object_label = labels[:, 0, 0] + labels[:, 0, 1] + labels[:, 0, 2]
-        vis_object_label = vis_object_label.to(torch.device('cuda')).long() # TODO: Fix with device selection
+        device = labels.device
+        vis_object_label = ((labels[:, 0, 0]-1)*15 + (labels[:, 0, 1]-1)*5 + (labels[:, 0, 2]-1)).long()
         vis_prior_params_mu = torch.tanh(self.vis_embedding(vis_object_label))
-        vis_prior_params_sigma = torch.ones(labels.size(0), self.vis_dim_y, 1)*np.log(self.vis_y_std)
-        vis_prior_params_sigma = vis_prior_params_sigma.to('cuda')
+        vis_prior_params_sigma = torch.ones(labels.size(0), self.vis_dim_y, 1, device=device)*np.log(self.vis_y_std)
         vis_prior_params_y = torch.cat((vis_prior_params_mu[:, :, None], vis_prior_params_sigma), dim=-1)
 
         return vis_prior_params_y
 
     def get_tac_prior_params_y(self, labels):
-        tac_object_label = labels[:, 0, 3] + labels[:, 0, 4] + labels[:, 0, 5]
-        tac_object_label = tac_object_label.to(torch.device('cuda')).long() # TODO: Fix with device selection
+        device = labels.device
+        tac_object_label = ((labels[:, 0, 3]-1)*15 + (labels[:, 0, 4]-1)*5 + (labels[:, 0, 5]-1)).long()
         tac_prior_params_mu = torch.tanh(self.tac_embedding(tac_object_label))
-        tac_prior_params_sigma = torch.ones(labels.size(0), self.tac_dim_y, 1)*np.log(self.tac_y_std)
-        tac_prior_params_sigma = tac_prior_params_sigma.to('cuda')
+        tac_prior_params_sigma = torch.ones(labels.size(0), self.tac_dim_y, 1, device=device)*np.log(self.tac_y_std)
         tac_prior_params_y = torch.cat((tac_prior_params_mu[:, :, None], tac_prior_params_sigma), dim=-1)
 
         return tac_prior_params_y
@@ -199,10 +195,8 @@ class CrossModalLF(nn.Module):
             tac_y_params_t_1, tac_hidden_y_t_1 = self.tac_y_net.forward(torch.cat([tac_zs_t, u_t], dim=-1), tac_hidden_y_t)
             tac_y_params_t_1 = tac_y_params_t_1.view(batch_size, self.tac_dim_y, self.tac_q_dist_y.nparams)
             # Perform cross-modal transfer and Bayesian Integration
-            vis2tac_y_params_t_1 = self.vis_y2tac_y.forward(vis_ys_t_1)
-            # TODO: condition this on learning rate, add other possible interactions here
-            vis2tac_y_params_t_1 = vis2tac_y_params_t_1.view(batch_size, self.vis_dim_y, self.vis_q_dist_y.nparams)
-            tac_y_params_t_1_ref = bayes_fusion(tac_y_params_t_1, vis2tac_y_params_t_1)
+            vis2tac_y_params_t_1 = self.vis_y2tac_y.forward(vis_ys_t_1).view(batch_size, self.vis_dim_y, self.vis_q_dist_y.nparams) if H == 1 else None
+            tac_y_params_t_1_ref = bayes_fusion(tac_y_params_t_1, vis2tac_y_params_t_1) if H == 1 else tac_y_params_t_1
 
             # Sample the tactile latent code y
             tac_ys_t_1 = self.tac_q_dist_y.sample(params=tac_y_params_t_1_ref)

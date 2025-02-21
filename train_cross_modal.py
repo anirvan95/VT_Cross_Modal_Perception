@@ -1,4 +1,5 @@
 import os
+import re
 import time
 from datetime import datetime
 import argparse
@@ -11,7 +12,7 @@ from torch.utils.data import DataLoader
 import utils.compute_utils as utils
 from latent_filter_crossmodal import CrossModalLF
 from utils.datasets import CrossModal
-from utils.plot_latent import extract_test_cases, plot_lf, save_lf
+from utils.plot_latent import validate_cmlf
 
 # Seeding for reproducibility
 np.random.seed(0)
@@ -19,7 +20,7 @@ torch.manual_seed(0)
 random.seed(0)
 
 
-def compute_elbo(cmlf, vis_obs, tac_obs, action, labels, hyperparam, H):
+def compute_elbo(cmlf, vis_obs, tac_obs, actions, labels, hyperparam, H):
     """
     Computes the ELBO Loss for training the cross-modal model
     :param cmlf:
@@ -31,13 +32,13 @@ def compute_elbo(cmlf, vis_obs, tac_obs, action, labels, hyperparam, H):
     :param H:
     :return:
     """
-    batch_size, T, _ = action.shape
+    batch_size, T, _ = actions.shape
 
     object_labels = labels[:, :, 6:] # Required for hierarchical prior, contrastive version is more general
     pose_labels = labels[:, :, :6] # GT Pose of the object
 
     (vis_prior_params_y_f, vis_y_params_f, vis_ys_f, vis_prior_params_z_f, vis_z_params_f, vis_zs_f, vis_xs_hat_f, vis_x_hat_params_f, vis_x_f, vis_hs_f, vis_cs_f,
-     tac_prior_params_y_f, tac_y_params_f, tac_ys_f, tac_prior_params_z_f, tac_z_params_f, tac_zs_f, tac_xs_hat_f, tac_x_hat_params_f, tac_x_f, tac_hs_f, tac_cs_f)= cmlf.filter(vis_obs, tac_obs, action, object_labels, H)
+     tac_prior_params_y_f, tac_y_params_f, tac_ys_f, tac_prior_params_z_f, tac_z_params_f, tac_zs_f, tac_xs_hat_f, tac_x_hat_params_f, tac_x_f, tac_hs_f, tac_cs_f)= cmlf.filter(vis_obs, tac_obs, actions, object_labels, H)
 
     # ############################################### Vision #######################################
     vis_prior_params_y = torch.stack(vis_prior_params_y_f, dim=1).view(batch_size, (T - 1), cmlf.vis_dim_y, 2)
@@ -106,7 +107,7 @@ def anneal_kl(hyperparam, num_iterations, iteration):
 def main():
     # parse command line arguments
     parser = argparse.ArgumentParser(description="parse args")
-    parser.add_argument('--num_objects', default=15, type=int, help='Number of objects')
+    parser.add_argument('--num_objects', default=75, type=int, help='Number of objects')
     parser.add_argument('-dist', default='normal', type=str, choices=['normal', 'laplace', 'flow'])
     parser.add_argument('-n', '--num-epochs', default=500, type=int, help='number of training epochs')
     parser.add_argument('-b', '--batch-size', default=20, type=int, help='batch size')
@@ -129,11 +130,11 @@ def main():
     parser.add_argument('--beta-anneal', default=True, type=bool, help='Use annealing of beta hyperparameter or Constrained optimisation')
     parser.add_argument('--use_cuda', default=True, type=bool, help='Use cuda or not, set False for CPU testing')
     parser.add_argument('--gpu', type=int, default=0)
-    parser.add_argument('--visdom', default=False, type=bool, help='Use Visdom for real time plotting, makes it slower')
-    parser.add_argument('--plotting', default=False, type=bool, help='Alternative to visdom for saving the plots, makes it slower')
+    parser.add_argument('--showplots', default=True, type=bool, help='Use Visdom for real time plotting, makes it slower')
+    parser.add_argument('--saveplots', default=False, type=bool, help='Alternative to visdom for saving the plots, makes it slower')
     parser.add_argument('--save', default='results/crossmodallf/', help='Path to save the models')
     parser.add_argument('--debug_dir', default='dump/training/crossmodallf/', help='Path to save the dump files')
-    parser.add_argument('--log_freq', default=50, type=int, help='num iterations per log')
+    parser.add_argument('--log_freq', default=100, type=int, help='num iterations per log')
 
     args = parser.parse_args()
 
@@ -141,15 +142,31 @@ def main():
         torch.cuda.set_device(args.gpu)
         args.cuda = True
 
-    # data loader
+    if args.showplots:
+        vis = visdom.Visdom(port=8097)
+    else:
+        vis = None
+
+    # Data Loader
     print('Loading Dataset')
     train_dir = 'dataset/cm_dataset/debug'
-    file_paths = sorted([os.path.join(train_dir, file) for file in os.listdir(train_dir) if file.endswith('.npz')])
-    dataset = CrossModal(file_paths)
+    val_dir = 'dataset/cm_dataset/validation'
+
+    train_file_paths = sorted(
+        [os.path.join(train_dir, file) for file in os.listdir(train_dir) if file.endswith('.npz')],
+        key=lambda x: int(re.search(r'\d+', os.path.basename(x)).group())  # Extract first numeric part
+    )
+    val_file_paths = sorted(
+        [os.path.join(val_dir, file) for file in os.listdir(val_dir) if file.endswith('.npz')],
+        key=lambda x: int(re.search(r'\d+', os.path.basename(x)).group())  # Extract first numeric part
+    )
+
+    train_dataset = CrossModal(train_file_paths)
+    val_dataset = CrossModal(val_file_paths)
     print('Done')
 
-    train_loader = DataLoader(dataset=dataset, batch_size=args.batch_size, shuffle=True)
-    test_loader = DataLoader(dataset=dataset, batch_size=3, shuffle=False)
+    train_loader = DataLoader(dataset=train_dataset, batch_size=args.batch_size, shuffle=True)
+    test_loader = DataLoader(dataset=val_dataset, batch_size=20, shuffle=False)
 
     # Create folders for the saving the model
     now = datetime.now()
@@ -171,25 +188,16 @@ def main():
         for key, value in args_dict.items():
             file.write(f"{key}: {value}\n")
 
-    # setup the optimizer
+    # Setup the optimizer
     optimizer = optim.Adam(cmlf.parameters(), lr=args.learning_rate)
 
-    # setup hyperparameter dict
+    # Setup hyperparameter dict
     hyperparam = {'lamb': args.lambs, 'lamb_start': args.lambs, 'lamb_end': args.lambe, 'beta': args.betas, 'beta_start': args.betas, 'beta_end': args.betae}
 
-    # setup visdom for visualization
-    '''
-    if args.visdom:
-        vis = visdom.Visdom(port=8097)
-
-    if args.visdom or args.plotting:
-        vis_x_test, tac_x_test, a_test, label_test, label_scatter, color_vals = extract_test_cases(test_loader)
-    '''
-    train_elbo = []
-
-    # training loop
+    # Training loop
     num_iterations = len(train_loader) * args.num_epochs
     iteration = 0
+    train_elbo = []
     elbo_running_mean = utils.RunningAverageMeter()
     print('Total iteration of training: ', num_iterations)
     while iteration < num_iterations:
@@ -211,7 +219,13 @@ def main():
                 actions = actions.to(dtype=torch.float32)
                 labels = labels.to(dtype=torch.float32)
 
-            # do ELBO gradient and accumulate loss
+            # Compute cross-modal activation
+            if iteration > 0.75*num_iterations:
+                H = 1
+            else:
+                H = 0
+
+            # ELBO gradient and accumulate loss
             vis_recon, tac_recon, obj, elbo = compute_elbo(cmlf, vis_obs, tac_obs, actions, labels, hyperparam, 1)
 
             if utils.isnan(obj).any():
@@ -236,14 +250,9 @@ def main():
                 utils.save_checkpoint({
                     'state_dict': cmlf.state_dict(),
                     'args': args}, out_dir, iteration)
-                '''
-                if args.visdom:
-                    # For real time evaluation, slightly faster
-                    plot_lf(cmlf, vis, x_test, a_test, label_test, label_scatter, color_vals)
-                elif args.plotting:
-                    # For tuning of parameters
-                    save_lf(cmlf, x_test, a_test, label_test, label_scatter, color_vals, iteration, out_dir)
-                '''
+
+                validate_cmlf(test_loader, cmlf, out_dir, H, iteration, save_plot=args.saveplots, show_plot=args.showplots, vis=vis)
+
             iteration += 1
 
 
