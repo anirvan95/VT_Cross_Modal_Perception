@@ -10,7 +10,7 @@ import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
 import utils.compute_utils as utils
-from latent_filter_crossmodal import CrossModalLF
+from latent_filter_crossmodal_v2t import CrossModalLF
 from utils.datasets import CrossModal
 from utils.plot_latent import validate_cmlf
 
@@ -262,6 +262,7 @@ def main():
                     validate_cmlf(test_loader, cmlf, out_dir, H, iteration, save_plot=args.saveplots, show_plot=args.showplots, vis=vis)
 
             iteration += 1
+
 
 if __name__ == '__main__':
     trainer = main()

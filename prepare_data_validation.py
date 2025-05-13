@@ -13,7 +13,7 @@ def normalize(matrix, min_val, max_val):
 
 char_map = {'c': 1, 'e': 2, 's': 3, 'r': 4, 'h': 5}
 db_path = 'dataset/cm_dataset/processed'
-training_path = 'dataset/cm_dataset/validation'
+save_path = 'dataset/cm_dataset/validation'
 
 # Load the normalization data
 vis_norm_data = np.load('vis_normalized.npz')
@@ -40,7 +40,7 @@ for i, object_name in enumerate(objects):
     with open(file_name, 'rb') as f:
         object_db = pickle.load(f)
 
-    for interaction in range(0, len(object_db), 12):
+    for interaction in range(0, len(object_db)):
         interaction_db = object_db[interaction]
         # action parameters - x, y, z, roll, pitch, yaw, gripper_distance, target_force, target, angular_velocity
         # action parameters - [99, 9]
@@ -72,7 +72,7 @@ for i, object_name in enumerate(objects):
     vis_obs_torch = normalize(vis_obs_np, min_viz, max_viz)
     tac_obs_torch = normalize(tac_obs_np, min_tac, max_tac)
     print('Saving data')
-    train_file_path = os.path.join(training_path, 'training_'+str(i)+'.npz')
+    train_file_path = os.path.join(save_path, 'training_'+str(i)+'.npz')
     np.savez(train_file_path,
                             vis_obs=vis_obs_torch.astype(np.float16),
                             tac_obs=tac_obs_torch.astype(np.float16),

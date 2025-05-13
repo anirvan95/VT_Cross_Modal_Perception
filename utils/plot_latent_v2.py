@@ -32,7 +32,6 @@ horizon = 99
 
 win_vis_test_reco = None
 win_tac_test_reco = None
-win_space_y = None
 vis_win_space_y = None
 tac_win_space_y = None
 vis_win_space_z = None
@@ -88,7 +87,7 @@ def validate_cmlf(test_loader, cmlf, out_dir, H, iteration, save_plot=False, sho
              vis_x_hat_params_f, vis_x_f, vis_hs_f, vis_cs_f,
              tac_prior_params_y_f, tac_y_params_f, tac_ys_f, tac_prior_params_z_f, tac_z_params_f, tac_zs_f, tac_xs_hat_f,
              tac_x_hat_params_f, tac_x_f, tac_hs_f, tac_cs_f,
-             vis2tac_y_params_f, lsttac_y_params_f) = cmlf.filter(vis_obs, tac_obs, actions, object_labels, H)
+             tac2vis_y_params_f, lstvis_y_params_f) = cmlf.filter(vis_obs, tac_obs, actions, object_labels, H)
 
             # Move results to CPU to reduce GPU memory usage
             vis_y_params_f = torch.stack(vis_y_params_f, dim=1).cpu()
@@ -200,6 +199,26 @@ def validate_cmlf(test_loader, cmlf, out_dir, H, iteration, save_plot=False, sho
         plt.savefig(os.path.join(out_dir, 'vis_latent_y_space_'+str(iteration)+'.png'))
         plt.close()
 
+    # #################################################### Tactile #####################################################
+    tac_qy_means = tac_y_params[:, :, :, 0]
+    tac_qy_means = tac_qy_means.reshape(num_test_samples * (horizon - 1), cmlf.tac_dim_y)
+    tac_var_y = torch.std(tac_qy_means.contiguous(), dim=0).pow(2)
+    var_sort, dim_y = torch.sort(tac_var_y)
+    tac_qy_means_inf = tac_qy_means[:, dim_y[-3:]]
+    if show_plot:
+        global tac_win_space_y
+        tac_win_space_y = vis.scatter(tac_qy_means_inf,
+                                      opts={'caption': 'latent vis y space', 'markercolor': color_vals_y_visdom,
+                                            'markersize': 2.0,
+                                            'layout': layout_def},
+                                      win=tac_win_space_y)
+    elif save_plot:
+        fig = plt.figure(figsize=(10, 8))
+        ax = fig.add_subplot(111, projection='3d')
+        ax.scatter(tac_qy_means_inf[:, 0], tac_qy_means_inf[:, 1], tac_qy_means_inf[:, 2], c=color_vals_y, s=10)
+        plt.savefig(os.path.join(out_dir, 'tac_latent_y_space_' + str(iteration) + '.png'))
+        plt.close()
+
     # # ############################################### Plot Z-Latent Space #############################################
     # color_vals_z = color_vals.reshape(num_test_samples*horizon, 3)
     # color_vals_z_visdom = color_vals_z*255
@@ -243,132 +262,6 @@ def validate_cmlf(test_loader, cmlf, out_dir, H, iteration, save_plot=False, sho
     #     ax.scatter(tac_qz_means_inf[:, 0], tac_qz_means_inf[:, 1], tac_qz_means_inf[:, 2], c=color_vals_z, s=10)
     #     plt.savefig(os.path.join(out_dir, 'tac_latent_z_space_' + str(iteration) + '.png'))
     #     plt.close()
-
-def validate_mmlf(test_loader, mmlf, out_dir, iteration, save_plot=False, show_plot=False, vis=None):
-    first = True
-    with (torch.no_grad()):
-        for i, values in enumerate(test_loader):
-            vis_obs, tac_obs, actions, labels = values
-
-            vis_obs = vis_obs.cuda().to(dtype=torch.float32)
-            tac_obs = tac_obs.cuda().to(dtype=torch.float32)
-            actions = actions.cuda().to(dtype=torch.float32)
-            labels = labels.cuda().to(dtype=torch.float32)
-
-            object_labels = labels[:, :, 6:]  # Required for hierarchical prior, contrastive version is more general
-            pose_labels = labels[:, :, :6]  # GT Pose of the object
-
-            (prior_params_y_f, y_params_f, ys_f, hs_f, cs_f,
-            vis_prior_params_z_f, vis_z_params_f, vis_zs_f, vis_xs_hat_f, vis_x_hat_params_f, vis_x_f,
-            tac_prior_params_z_f, tac_z_params_f, tac_zs_f, tac_xs_hat_f, tac_x_hat_params_f, tac_x_f) = mmlf.filter(vis_obs, tac_obs, actions, object_labels)
-
-            # Move results to CPU to reduce GPU memory usage
-            y_params_f = torch.stack(y_params_f, dim=1).cpu()
-            vis_z_params_f = torch.stack(vis_z_params_f, dim=1).cpu()
-            vis_x_recon_f = torch.stack(vis_xs_hat_f, dim=1).cpu()
-            x_gt_f = torch.stack(vis_x_f, dim=1).cpu()
-            tac_z_params_f = torch.stack(tac_z_params_f, dim=1).cpu()
-            tac_x_recon_f = torch.stack(tac_xs_hat_f, dim=1).cpu()
-            tac_gt_f = torch.stack(tac_x_f, dim=1).cpu()
-
-            if first:
-                y_params = y_params_f
-                vis_z_params, vis_x_recons, vis_x_gts = vis_z_params_f, vis_x_recon_f, x_gt_f
-                tac_z_params, tac_x_recons, tac_x_gts = tac_z_params_f, tac_x_recon_f, tac_gt_f
-                labels_test = object_labels.cpu()
-                first = False
-            else:
-                y_params = torch.cat((y_params, y_params_f), dim=0)
-                vis_z_params = torch.cat((vis_z_params, vis_z_params_f), dim=0)
-                vis_x_recons = torch.cat((vis_x_recons, vis_x_recon_f), dim=0)
-                vis_x_gts = torch.cat((vis_x_gts, x_gt_f), dim=0)
-                tac_z_params = torch.cat((tac_z_params, tac_z_params_f), dim=0)
-                tac_x_recons = torch.cat((tac_x_recons, tac_x_recon_f), dim=0)
-                tac_x_gts = torch.cat((tac_x_gts, tac_gt_f), dim=0)
-                labels_test = torch.cat((labels_test, object_labels.cpu()), dim=0)
-
-    num_test_samples = labels_test.shape[0]
-    object_ind = ((labels_test[:, :, 0]-1)*15 + (labels_test[:, :, 1]-1)*5 + (labels_test[:, :, 2]-1))
-    object_ind = object_ind.reshape(-1)
-    cmap1 = plt.get_cmap('tab20b')
-    color_vals =  cmap1(object_ind.numpy() / 75)
-    color_vals = color_vals[:, 0:3]
-    color_vals = color_vals.reshape(num_test_samples, horizon, 3)
-    test_object_labels = object_ind.reshape(num_test_samples, horizon)
-
-    # if show_plot:
-    #      global win_label
-    #      label_scatter = test_object_labels.reshape(-1).numpy()
-    #      label_ind = np.arange(num_test_samples*horizon)
-    #      label_scatter = np.concatenate((label_ind[:, None], label_scatter[:, None]), axis=-1)
-    #      color_scatter = color_vals.reshape(num_test_samples*horizon, 3)
-    #      color_scatter = color_scatter * 255
-    #      color_scatter = color_scatter.astype(int)
-    #      win_label = vis.scatter(label_scatter, opts={'caption': 'labels', 'markercolor': color_scatter, 'markersize': 10}, win=win_label)
-
-    vis_recon_mean = torch.mean(vis_x_recons, dim=(2, 3, 4))
-    vis_gt_mean = torch.mean(vis_x_gts, dim=(2, 3, 4))
-
-    tactile_recon_mean = torch.mean(tac_x_recons, dim=(2, 3, 4))
-    tactile_gt_mean = torch.mean(tac_x_gts, dim=(2, 3, 4))
-    # ############################################### Plot reconstruction #############################################
-    # #################################################### Vision #####################################################
-    fig, ax = plt.subplots(3, 3, figsize=(5, 5))
-    index = 0
-    for i in range(3):
-        for j in range(3):
-            ax[i, j].plot(vis_recon_mean[index, :].detach().numpy(), '.r')
-            ax[i, j].plot(vis_gt_mean[index, :].detach(), '.b')
-            index += int(num_test_samples / 9)  # 9 the samples
-
-    if show_plot:
-        global win_vis_test_reco
-        win_vis_test_reco = vis.matplot(plt, win=win_vis_test_reco)
-        plt.close()
-    elif save_plot:
-        recon_fig_name = os.path.join(out_dir, 'vis_reconstructed_' + str(iteration) + '.png')
-        plt.savefig(recon_fig_name)
-        plt.close()
-    # #################################################### Tactile ####################################################
-    fig, ax = plt.subplots(3, 3, figsize=(5, 5))
-    index = 0
-    for i in range(3):
-        for j in range(3):
-            ax[i, j].plot(tactile_recon_mean[index, :].detach(), '.c')
-            ax[i, j].plot(tactile_gt_mean[index, :].cpu().detach(), '.m')
-            index += int(num_test_samples / 9)  # 9 the samples
-
-    if show_plot:
-        global win_tac_test_reco
-        win_tac_test_reco = vis.matplot(plt, win=win_tac_test_reco)
-        plt.close()
-    elif save_plot:
-        recon_fig_name = os.path.join(out_dir, 'tac_reconstructed_' + str(iteration) + '.png')
-        plt.savefig(recon_fig_name)
-        plt.close()
-
-    # ############################################### Plot Y-Latent Space #############################################
-    color_vals_y = color_vals[:, 0:-1, :]
-    color_vals_y = color_vals_y.reshape(num_test_samples * (horizon - 1), 3)
-    color_vals_y_visdom = color_vals_y*255
-    color_vals_y_visdom = color_vals_y_visdom.astype(int)
-
-    qy_means = y_params[:, :, :, 0]
-    qy_means = qy_means.reshape(num_test_samples * (horizon - 1), mmlf.dim_y)
-    var_y = torch.std(qy_means.contiguous(), dim=0).pow(2)
-    var_sort, dim_y = torch.sort(var_y)
-    qy_means_inf = qy_means[:, dim_y[-3:]]
-    if show_plot:
-        global win_space_y
-        win_space_y = vis.scatter(qy_means_inf, opts={'caption': 'latent vis y space', 'markercolor': color_vals_y_visdom, 'markersize': 2.5,
-                                        'layout': layout_def}, win=win_space_y)
-    elif save_plot:
-        fig = plt.figure(figsize=(10, 8))
-        ax = fig.add_subplot(111, projection='3d')
-        ax.scatter(qy_means_inf[:, 0], qy_means_inf[:, 1], qy_means_inf[:, 2], c=color_vals_y, s=10)
-        plt.savefig(os.path.join(out_dir, 'latent_y_space_'+str(iteration)+'.png'))
-        plt.close()
-
 
 
 

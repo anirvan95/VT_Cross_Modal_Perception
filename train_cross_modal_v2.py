@@ -10,9 +10,9 @@ import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
 import utils.compute_utils as utils
-from latent_filter_crossmodal import CrossModalLF
+from latent_filter_crossmodal_v2 import CrossModalLF
 from utils.datasets import CrossModal
-from utils.plot_latent import validate_cmlf
+from utils.plot_latent_v2 import validate_cmlf
 
 # Seeding for reproducibility
 np.random.seed(0)
@@ -39,7 +39,7 @@ def compute_elbo(cmlf, vis_obs, tac_obs, actions, labels, hyperparam, H):
 
     (vis_prior_params_y_f, vis_y_params_f, vis_ys_f, vis_prior_params_z_f, vis_z_params_f, vis_zs_f, vis_xs_hat_f, vis_x_hat_params_f, vis_x_f, vis_hs_f, vis_cs_f,
      tac_prior_params_y_f, tac_y_params_f, tac_ys_f, tac_prior_params_z_f, tac_z_params_f, tac_zs_f, tac_xs_hat_f, tac_x_hat_params_f, tac_x_f, tac_hs_f, tac_cs_f,
-     vis2tac_y_params_f, lsttac_y_params_f)= cmlf.filter(vis_obs, tac_obs, actions, object_labels, H)
+     tac2vis_y_params_f, lstvis_y_params_f)= cmlf.filter(vis_obs, tac_obs, actions, object_labels, H)
 
     # ############################################### Vision #######################################
     vis_prior_params_y = torch.stack(vis_prior_params_y_f, dim=1).view(batch_size, (T - 1), cmlf.vis_dim_y, 2)
@@ -112,7 +112,7 @@ def main():
     parser.add_argument('-n', '--num-epochs', default=250, type=int, help='number of training epochs')
     parser.add_argument('-b', '--batch-size', default=48, type=int, help='batch size')
     parser.add_argument('--learning_rate', default=1e-5, type=float, help='learning rate')
-    parser.add_argument('--crossmodal_rate', default=1, type=float, help='at what frac of training iteration should it start, set 1 to ignore CM')
+    parser.add_argument('--crossmodal_rate', default=0.25, type=float, help='at what frac of training iteration should it start, set 1 to ignore CM')
     parser.add_argument('--crossmodal_weight', default=1, type=float, help='weighted factor, reduce it less than 1 to give importance of cm transfer')
     parser.add_argument('--vis_dim_z', default=16, type=int, help='size of latent dimension visual z')
     parser.add_argument('--vis_dim_y', default=16, type=int, help='size of latent dimension visual y')
@@ -135,7 +135,7 @@ def main():
     parser.add_argument('--validate', default=True, type=bool, help='Perform validation or not, avoids overfitting')
     parser.add_argument('--showplots', default=True, type=bool, help='Use Visdom for real time plotting, makes it slower')
     parser.add_argument('--saveplots', default=False, type=bool, help='Alternative to visdom for saving the plots, makes it slower')
-    parser.add_argument('--save', default='results/crossmodallf/', help='Path to save the models')
+    parser.add_argument('--save', default='results/crossmodallfv2/', help='Path to save the models')
     parser.add_argument('--debug_dir', default='dump/training/crossmodallf/', help='Path to save the dump files')
     parser.add_argument('--log_freq', default=500, type=int, help='num iterations per log')
 
@@ -152,7 +152,7 @@ def main():
 
     # Data Loader
     print('Loading Dataset')
-    train_dir = 'dataset/cm_dataset/'
+    train_dir = 'dataset/cm_dataset/training'
     train_file_paths = sorted(
         [os.path.join(train_dir, file) for file in os.listdir(train_dir) if file.endswith('.npz')],
         key=lambda x: int(re.search(r'\d+', os.path.basename(x)).group())  # Extract first numeric part
@@ -180,9 +180,6 @@ def main():
 
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
-
-    if not os.path.exists(debug_dir):
-        os.makedirs(debug_dir)
 
     if not os.path.exists(checkpoint_dir):
         os.makedirs(checkpoint_dir)

@@ -14,15 +14,23 @@ class STHeaviside(Function):
         return grad_output
 
 
-def bayes_fusion(trans_dist_params, meas_dist_params):
-    trans_mean = trans_dist_params[:, :, 0:1]
-    trans_logsigma = trans_dist_params[:, :, 1:2]
-    meas_mean = meas_dist_params[:, :, 0:1]
-    mean_logsigma = meas_dist_params[:, :, 1:2]
-    trans_variance = torch.exp(trans_logsigma) ** 2
-    meas_variance = torch.exp(mean_logsigma) ** 2
-    normalization = trans_variance + meas_variance
-    posterior_mean = (meas_variance * trans_mean + trans_variance * meas_mean) / normalization # check here TODO
-    posterior_variance = (meas_variance * trans_variance) / normalization
+def bayes_fusion(prior_dist_params, like_dist_params, weight=1):
+    # if weight < 1 - prior model dominates
+    # if weight > 1 - likelihood model dominates
+    # weight = 1 - no change
+
+    prior_mean = prior_dist_params[:, :, 0:1]
+    prior_logsigma = prior_dist_params[:, :, 1:2]
+
+    like_mean = like_dist_params[:, :, 0:1]
+    like_logsigma = like_dist_params[:, :, 1:2]
+
+    prior_variance = torch.exp(prior_logsigma) ** 2
+    like_variance = (torch.exp(like_logsigma) ** 2) / weight
+
+    normalization = prior_variance + like_variance
+
+    posterior_mean = (like_variance * prior_mean + prior_variance * like_mean) / normalization
+    posterior_variance = (like_variance * prior_variance) / normalization
 
     return torch.cat([posterior_mean, torch.log(torch.sqrt(posterior_variance))], dim=-1)

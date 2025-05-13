@@ -15,7 +15,7 @@ torch.manual_seed(0)
 random.seed(0)
 
 # Dataset specific parameters
-vis_obs_dim = [64, 64, 2]
+vis_obs_dim = [128, 128, 2]
 tac_obs_dim = [80, 80, 1]
 action_dim = 9
 horizon = 99
@@ -32,25 +32,15 @@ class VisEncoder(nn.Module):
 
         # Define the CNN with 4 layers
         self.cnn_encoder = nn.Sequential(
+            # Input: [batch_size, 2, 128, 128]
             nn.Conv2d(in_channels=2, out_channels=32, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(32),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-
-            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(64),
+            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, stride=2, padding=1),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-
-            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(128),
+            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=2, padding=1),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-
-            nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, stride=1, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool2d((1, 1)),  # Global Average Pooling to reduce dimensionality
+            nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, stride=2, padding=1),
+            nn.ReLU()
         )
 
         # Fully connected layer to match the dimension
@@ -61,9 +51,8 @@ class VisEncoder(nn.Module):
     def forward(self, x):
         batch_size, _, _, _ = x.shape
         x = x.permute(0, 3, 1, 2)  # Convert (B, H, W, C) -> (B, C, H, W)
-        z = self.fc(self.cnn_encoder(x).view(batch_size, -1)) # [B, latent_dim*2]
+        z = self.fc(self.cnn_encoder(x).reshape(batch_size, -1)) # [B, latent_dim*2]
         return z
-
 
 
 class VisDecoder(nn.Module):
@@ -79,19 +68,15 @@ class VisDecoder(nn.Module):
 
         # Define a 4-layer transposed CNN decoder
         self.cnn_decoder = nn.Sequential(
-            nn.ConvTranspose2d(in_channels=64, out_channels=128, kernel_size=4, stride=2, padding=1),  # (4, 4)
-            nn.BatchNorm2d(128),
+            nn.ConvTranspose2d(in_channels=256, out_channels=128, kernel_size=4, stride=2, padding=1),  # (128, 8, 8)
             nn.ReLU(),
-
-            nn.ConvTranspose2d(in_channels=128, out_channels=64, kernel_size=4, stride=2, padding=1),  # (8, 8)
-            nn.BatchNorm2d(64),
+            nn.ConvTranspose2d(in_channels=128, out_channels=64, kernel_size=4, stride=2, padding=1),  # (64, 16, 16)
             nn.ReLU(),
-
-            nn.ConvTranspose2d(in_channels=64, out_channels=32, kernel_size=4, stride=4, padding=0),  # (32, 32)
-            nn.BatchNorm2d(32),
+            nn.ConvTranspose2d(in_channels=64, out_channels=32, kernel_size=4, stride=2, padding=1),  # (32, 32, 32)
             nn.ReLU(),
-
-            nn.ConvTranspose2d(in_channels=32, out_channels=2, kernel_size=4, stride=2, padding=1),  # (64, 64)
+            nn.ConvTranspose2d(in_channels=32, out_channels=16, kernel_size=4, stride=2, padding=1),  # (16, 64, 64)
+            nn.ReLU(),
+            nn.ConvTranspose2d(in_channels=16, out_channels=2, kernel_size=4, stride=2, padding=1),  # (2, 128, 128)
             nn.Sigmoid()
         )
 
@@ -99,7 +84,7 @@ class VisDecoder(nn.Module):
         batch_size = z.shape[0]
         # Pass through fully connected layers
         fc_out = self.fc(z)
-        fc_out = fc_out.reshape(batch_size, 64, 2, 2)
+        fc_out = fc_out.reshape(batch_size, 256, 4, 4)
         reconstructed = self.cnn_decoder(fc_out)
         mu_obs = reconstructed.permute(0, 2, 3, 1)
         sigma_obs = Variable(torch.ones(z.size(0), vis_obs_dim[0], vis_obs_dim[1], vis_obs_dim[2]) * np.log(self.std))
@@ -306,8 +291,8 @@ class VAE(nn.Module):
             device = 'cpu'
 
         if modality == 'vision':
-            self.encoder = VisEncoder(latent_dim=dim_z * self.q_dist.nparams, cnn_out_dim=64*2*2, device=device) # CNN out dimension needs calculation
-            self.decoder = VisDecoder(latent_dim=dim_z, std=self.x_std, cnn_out_dim=64*2*2, device=device) # CNN out dimension needs calculation
+            self.encoder = VisEncoder(latent_dim=dim_z * self.q_dist.nparams, cnn_out_dim=256*16*16, device=device) # CNN out dimension needs calculation
+            self.decoder = VisDecoder(latent_dim=dim_z, std=self.x_std, cnn_out_dim=256*4*4, device=device) # CNN out dimension needs calculation
 
         elif modality == 'tactile':
             self.encoder = TacEncoder(latent_dim=dim_z * self.q_dist.nparams, cnn_out_dim=256*10*10, device=device)
