@@ -160,30 +160,10 @@ class TacDecoder(nn.Module):
 
 class MLPTransition(nn.Module):
     """
-    MLP Transition function to model the non-linear dynamics
-    """
-    def __init__(self, input_dim, output_dim):
-        super(MLPTransition, self).__init__()
-        self.output_dim = output_dim
-        self.input_dim = input_dim
-        self.fc1 = nn.Linear(input_dim, 16)
-        self.fc2 = nn.Linear(16, output_dim)
-
-        # Setup the non-linearity
-        self.act = nn.ReLU()
-
-    def forward(self, x):
-        h = self.act(self.fc1(x))
-        h = self.fc2(h)
-        z = h.view(x.size(0), self.output_dim)
-        return z
-
-class MLPTransitionV2(nn.Module):
-    """
     MLP Transition function to model the non-linear dynamics for the cross modal
     """
     def __init__(self, input_dim, output_dim):
-        super(MLPTransitionV2, self).__init__()
+        super(MLPTransition, self).__init__()
         self.output_dim = output_dim
         self.input_dim = input_dim
         self.fc1 = nn.Linear(input_dim, 32)

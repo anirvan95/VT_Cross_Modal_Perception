@@ -9,7 +9,7 @@ import torch
 import random
 import numpy as np
 import imageio
-import umap
+# import umap
 
 layout_def = {
     'scene': {

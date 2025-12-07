@@ -9,6 +9,7 @@ tac_obs_dim = [80, 80, 1]
 action_dim = 9
 horizon = 99
 
+
 class CrossModal(Dataset):
     def __init__(self, file_paths, transform=None):
         """
@@ -54,7 +55,6 @@ class CrossModal(Dataset):
                 torch.tensor(all_tac_obs, dtype=torch.float16),
                 torch.tensor(all_actions, dtype=torch.float16),
                 torch.tensor(all_gt_obs, dtype=torch.float16))
-
 
     def __len__(self):
         return self.all_actions.shape[0]
