@@ -10,7 +10,7 @@ import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
 import utils.compute_utils as utils
-from cross_modal_latent_filter import CMLF
+from utils.cross_modal_latent_filter import CMLF
 from utils.datasets import CrossModal
 from utils.plot_latent import validate_cmlf
 
@@ -132,8 +132,8 @@ def main():
     parser.add_argument('--beta-anneal', default=True, type=bool, help='Use annealing of beta hyperparameter or Constrained optimisation')
     parser.add_argument('--use_cuda', default=True, type=bool, help='Use cuda or not, set False for CPU testing')
     parser.add_argument('--gpu', type=int, default=0)
-    parser.add_argument('--validate', default=False, type=bool, help='Perform validation or not, avoids overfitting')
-    parser.add_argument('--showplots', default=False, type=bool, help='Use Visdom for real time plotting, makes it slower')
+    parser.add_argument('--validate', default=True, type=bool, help='Perform validation or not, avoids overfitting')
+    parser.add_argument('--showplots', default=True, type=bool, help='Use Visdom for real time plotting, makes it slower')
     parser.add_argument('--saveplots', default=False, type=bool, help='Alternative to visdom for saving the plots, makes it slower')
     parser.add_argument('--save', default=os.path.join('results', 'w-cm'), help='Path to save the models')
     parser.add_argument('--log_freq', default=500, type=int, help='num iterations per log')
@@ -151,7 +151,7 @@ def main():
 
     # Data Loader
     print('Loading Dataset')
-    train_dir = os.path.join('dataset', 'cm_dataset', 'train_set')
+    train_dir = os.path.join('dataset', 'cm_dataset', 'test_set')
     train_file_paths = sorted(
         [os.path.join(train_dir, file) for file in os.listdir(train_dir) if file.endswith('.npz')],
         key=lambda x: int(re.search(r'\d+', os.path.basename(x)).group())  # Extract first numeric part
@@ -222,7 +222,6 @@ def main():
                 labels = labels.to(dtype=torch.float32)
 
             # Compute cross-modal activation time
-
             if iteration > args.crossmodal_rate*num_iterations:
                 H = 1
             else:

@@ -91,13 +91,13 @@ for i, object_name in enumerate(objects):
     with open(file_name, 'rb') as f:
         object_db = pickle.load(f)
 
-    indices = list(range(len(object_db)))
+    indices = list(range(len(object_db)))  # Select 5 interactions out of 16
     random.shuffle(indices)
     testing_indices = indices[:5]
     remaining_indices = indices[5:]
     random.shuffle(remaining_indices)
     validation_indices = remaining_indices[:5]
-    training_indices = remaining_indices[5:]
+    training_indices = remaining_indices
     random.shuffle(training_indices)
 
     # Train set

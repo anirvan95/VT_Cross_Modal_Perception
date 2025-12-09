@@ -39,6 +39,7 @@ vis_win_space_z = None
 tac_win_space_z = None
 win_label = None
 
+
 def compute_distances(features, labels):
     unique_classes = np.unique(labels)
 
@@ -82,13 +83,12 @@ def validate_cmlf(test_loader, cmlf, out_dir, H, iteration, save_plot=False, sho
             labels = labels.cuda().to(dtype=torch.float32)
 
             object_labels = labels[:, :, 6:]  # Required for hierarchical prior, contrastive version is more general
-            pose_labels = labels[:, :, :6]  # GT Pose of the object
 
             (vis_prior_params_y_f, vis_y_params_f, vis_ys_f, vis_prior_params_z_f, vis_z_params_f, vis_zs_f, vis_xs_hat_f,
              vis_x_hat_params_f, vis_x_f, vis_hs_f, vis_cs_f,
              tac_prior_params_y_f, tac_y_params_f, tac_ys_f, tac_prior_params_z_f, tac_z_params_f, tac_zs_f, tac_xs_hat_f,
              tac_x_hat_params_f, tac_x_f, tac_hs_f, tac_cs_f,
-             vis2tac_y_params_f, lsttac_y_params_f) = cmlf.filter(vis_obs, tac_obs, actions, object_labels, H)
+             vis2tac_y_params_f, lsttac_y_params_f, tac2vis_y_params_f, lstvis_y_params_f) = cmlf.filter(vis_obs, tac_obs, actions, object_labels, H)
 
             # Move results to CPU to reduce GPU memory usage
             vis_y_params_f = torch.stack(vis_y_params_f, dim=1).cpu()
@@ -117,6 +117,7 @@ def validate_cmlf(test_loader, cmlf, out_dir, H, iteration, save_plot=False, sho
                 labels_test = torch.cat((labels_test, object_labels.cpu()), dim=0)
 
     num_test_samples = labels_test.shape[0]
+    print(num_test_samples)
     object_ind = ((labels_test[:, :, 0]-1)*15 + (labels_test[:, :, 1]-1)*5 + (labels_test[:, :, 2]-1))
     object_ind = object_ind.reshape(-1)
     cmap1 = plt.get_cmap('tab20b')
@@ -244,7 +245,8 @@ def validate_cmlf(test_loader, cmlf, out_dir, H, iteration, save_plot=False, sho
     #     plt.savefig(os.path.join(out_dir, 'tac_latent_z_space_' + str(iteration) + '.png'))
     #     plt.close()
 
-def validate_mmlf(test_loader, mmlf, out_dir, iteration, save_plot=False, show_plot=False, vis=None):
+
+def validate_baseline(test_loader, mmlf, out_dir, iteration, save_plot=False, show_plot=False, vis=None):
     first = True
     with (torch.no_grad()):
         for i, values in enumerate(test_loader):

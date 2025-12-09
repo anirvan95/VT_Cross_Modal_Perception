@@ -1,4 +1,4 @@
-from networks import *
+from utils.networks import *
 
 # Seeding for reproducibility
 np.random.seed(0)
@@ -29,7 +29,6 @@ class CMLF(nn.Module):
         self.vis_q_dist_y = dist.Normal()
 
         # hyperparameters for prior p(z) - Hierarchical prior
-        # self.register_buffer('prior_params_y', torch.zeros(self.dim_y, 2))
         self.vis_embedding = nn.Embedding(num_embeddings=args.num_objects, embedding_dim=self.vis_dim_y)
         # Recognition Model  - Visual Encoder & Decoder
         self.vis_vae = VAE(dim_z=self.vis_dim_z, std=self.vis_x_std, modality='vision', use_cuda=args.use_cuda)
@@ -48,7 +47,6 @@ class CMLF(nn.Module):
         self.tac_q_dist_y = dist.Normal()
 
         # hyperparameters for prior p(z) - Hierarchical prior
-        # self.register_buffer('prior_params_y', torch.zeros(self.dim_y, 2))
         self.tac_embedding = nn.Embedding(num_embeddings=args.num_objects, embedding_dim=self.tac_dim_y)
         # Recognition Model  - Visual Encoder & Decoder
         self.tac_vae = VAE(dim_z=self.tac_dim_z, std=self.tac_x_std, modality='tactile', use_cuda=args.use_cuda)
@@ -216,8 +214,8 @@ class CMLF(nn.Module):
                 lsttac_y_params_f.append(tac_y_params_t_1)
 
             # Sample the latent code y
-            tac_ys_t_1 = self.tac_q_dist_y.sample(params=vis_y_params_t_1_ref)
-            vis_ys_t_1 = self.vis_q_dist_y.sample(params=tac_y_params_t_1_ref)
+            tac_ys_t_1 = self.tac_q_dist_y.sample(params=tac_y_params_t_1_ref)
+            vis_ys_t_1 = self.vis_q_dist_y.sample(params=vis_y_params_t_1_ref)
 
             # Obtain the next step visual and tactile z's via common dynamics function
             fused_trans_params_t_1 = self.transition_net.forward(torch.cat([vis_zs_t, tac_zs_t, vis_ys_t_1, tac_ys_t_1, u_t_1], dim=-1))
