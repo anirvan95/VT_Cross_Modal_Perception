@@ -1,8 +1,0 @@
-datasets
-legacy/datasets
-legacy/results
-runs
-results
-.idea/*
-dump
-plotter/

@@ -1,0 +1,18 @@
+\begin{table}[!ht]
+\label{tab:noisecorr}
+\centering
+\caption{Ablation study on noise and corruption, with heatmap in cells. Brighter hue signifies higher error and worst performance.}
+\begin{tabular*}{\textwidth}{@{\extracolsep\fill}ccccccc}
+\toprule
+\multicolumn{1}{l}{}           &          & \multicolumn{1}{c}{Nominal}        & \multicolumn{2}{c}{Noise}                                               & \multicolumn{2}{c}{Corruption}                                   \\
+\cmidrule{3-7}
+Parameters                     & Methods  & \multicolumn{1}{c}{$\sigma,c$=0} & \multicolumn{1}{c}{$\sigma$=0.2} & \multicolumn{1}{c}{$\sigma$=0.4} & \multicolumn{1}{c}{$c$=0.15} & \multicolumn{1}{c}{$c$=0.35}  \\
+\midrule
+{% for row in rows %}
+{% if row.newblock %}\cmidrule{1-2}{% endif %}
+\multirow{3}{*}{{ row.block }} & Joint    & {{ row.joint[0] }}    & {{ row.joint[1] }}    & {{ row.joint[2] }}    & {{ row.joint[3] }}    & {{ row.joint[4] }}    \\
+                               & wo-CM    & {{ row.wo_cm[0] }}    & {{ row.wo_cm[1] }}    & {{ row.wo_cm[2] }}    & {{ row.wo_cm[3] }}    & {{ row.wo_cm[4] }}    \\
+                               & w/-CM    & {{ row.w_cm[0] }}     & {{ row.w_cm[1] }}     & {{ row.w_cm[2] }}     & {{ row.w_cm[3] }}     & {{ row.w_cm[4] }}     \\
+{% endfor %}
+\end{tabular*}
+\end{table}

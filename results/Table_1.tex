@@ -1,0 +1,48 @@
+\begin{table}[!ht]
+\label{tab:noisecorr}
+\centering
+\caption{Ablation study on noise and corruption, with heatmap in cells. Brighter hue signifies higher error and worst performance.}
+\begin{tabular*}{\textwidth}{@{\extracolsep\fill}ccccccc}
+\toprule
+\multicolumn{1}{l}{}           &          & \multicolumn{1}{c}{Nominal}        & \multicolumn{2}{c}{Noise}                                               & \multicolumn{2}{c}{Corruption}                                   \\
+\cmidrule{3-7}
+Parameters                     & Methods  & \multicolumn{1}{c}{$\sigma,c$=0} & \multicolumn{1}{c}{$\sigma$=0.2} & \multicolumn{1}{c}{$\sigma$=0.4} & \multicolumn{1}{c}{$c$=0.15} & \multicolumn{1}{c}{$c$=0.35}  \\
+\midrule
+
+
+\multirow{3}{*}{Shape} & Joint    & \cellcolor{Peach!43!white}11$\pm$1.1    & \cellcolor{Peach!42!white}11$\pm$1.3    & \cellcolor{Peach!45!white}11$\pm$1.6    & \cellcolor{Peach!75!white}12$\pm$0.86    & \cellcolor{Peach!99!white}13$\pm$0.82    \\
+                               & wo-CM    & \cellcolor{Peach!3!white}9.7$\pm$0.34    & \cellcolor{Peach!49!white}11$\pm$0.78    & \cellcolor{Peach!56!white}12$\pm$0.78    & \cellcolor{Peach!42!white}11$\pm$0.49    & \cellcolor{Peach!50!white}11$\pm$0.45    \\
+                               & w/-CM    & \cellcolor{Peach!0!white}9.6$\pm$0.36     & \cellcolor{Peach!27!white}11$\pm$0.83     & \cellcolor{Peach!29!white}11$\pm$0.54     & \cellcolor{Peach!11!white}10$\pm$0.53     & \cellcolor{Peach!27!white}11$\pm$0.86     \\
+
+\cmidrule{1-2}
+\multirow{3}{*}{Size} & Joint    & \cellcolor{Peach!24!white}11$\pm$1.3    & \cellcolor{Peach!39!white}12$\pm$1.5    & \cellcolor{Peach!56!white}12$\pm$1.9    & \cellcolor{Peach!60!white}12$\pm$1.3    & \cellcolor{Peach!99!white}14$\pm$1.2    \\
+                               & wo-CM    & \cellcolor{Peach!6!white}10$\pm$1.1    & \cellcolor{Peach!58!white}12$\pm$1.3    & \cellcolor{Peach!66!white}13$\pm$1.7    & \cellcolor{Peach!40!white}12$\pm$0.88    & \cellcolor{Peach!70!white}13$\pm$0.62    \\
+                               & w/-CM    & \cellcolor{Peach!0!white}10$\pm$1.5     & \cellcolor{Peach!27!white}11$\pm$0.94     & \cellcolor{Peach!46!white}12$\pm$0.91     & \cellcolor{Peach!21!white}11$\pm$1.3     & \cellcolor{Peach!51!white}12$\pm$1.3     \\
+
+\cmidrule{1-2}
+\multirow{3}{*}{Vis. Texture} & Joint    & \cellcolor{Peach!65!white}11$\pm$1.2    & \cellcolor{Peach!64!white}11$\pm$1.1    & \cellcolor{Peach!79!white}12$\pm$1.1    & \cellcolor{Peach!78!white}12$\pm$0.77    & \cellcolor{Peach!99!white}13$\pm$0.66    \\
+                               & wo-CM    & \cellcolor{Peach!17!white}7.4$\pm$0.47    & \cellcolor{Peach!38!white}8.8$\pm$0.29    & \cellcolor{Peach!29!white}8.2$\pm$0.42    & \cellcolor{Peach!36!white}8.7$\pm$0.36    & \cellcolor{Peach!45!white}9.3$\pm$0.32    \\
+                               & w/-CM    & \cellcolor{Peach!0!white}6.3$\pm$0.49     & \cellcolor{Peach!19!white}7.5$\pm$0.39     & \cellcolor{Peach!24!white}7.9$\pm$0.58     & \cellcolor{Peach!16!white}7.3$\pm$0.42     & \cellcolor{Peach!21!white}7.7$\pm$0.5     \\
+
+\cmidrule{1-2}
+\multirow{3}{*}{Stiffness} & Joint    & \cellcolor{Peach!74!white}15$\pm$1.7    & \cellcolor{Peach!84!white}16$\pm$1.7    & \cellcolor{Peach!99!white}18$\pm$1.8    & \cellcolor{Peach!88!white}17$\pm$1.2    & \cellcolor{Peach!98!white}18$\pm$0.76    \\
+                               & wo-CM    & \cellcolor{Peach!18!white}9.8$\pm$4.3    & \cellcolor{Peach!23!white}10$\pm$4.3    & \cellcolor{Peach!23!white}10$\pm$3.9    & \cellcolor{Peach!23!white}10$\pm$3.7    & \cellcolor{Peach!25!white}10$\pm$3.2    \\
+                               & w/-CM    & \cellcolor{Peach!0!white}7.9$\pm$2.8     & \cellcolor{Peach!4!white}8.4$\pm$3.4     & \cellcolor{Peach!13!white}9.3$\pm$3.6     & \cellcolor{Peach!3!white}8.3$\pm$2.7     & \cellcolor{Peach!15!white}9.5$\pm$2.6     \\
+
+\cmidrule{1-2}
+\multirow{3}{*}{Mass} & Joint    & \cellcolor{Peach!33!white}13$\pm$1.4    & \cellcolor{Peach!35!white}13$\pm$1.5    & \cellcolor{Peach!57!white}14$\pm$1.7    & \cellcolor{Peach!64!white}15$\pm$1.5    & \cellcolor{Peach!99!white}17$\pm$1.7    \\
+                               & wo-CM    & \cellcolor{Peach!21!white}12$\pm$1.3    & \cellcolor{Peach!35!white}13$\pm$1.9    & \cellcolor{Peach!38!white}13$\pm$1.4    & \cellcolor{Peach!37!white}13$\pm$1.1    & \cellcolor{Peach!27!white}13$\pm$0.74    \\
+                               & w/-CM    & \cellcolor{Peach!0!white}11$\pm$1.6     & \cellcolor{Peach!2!white}11$\pm$1.7     & \cellcolor{Peach!9!white}11$\pm$1.2     & \cellcolor{Peach!7!white}11$\pm$1.4     & \cellcolor{Peach!17!white}12$\pm$1     \\
+
+\cmidrule{1-2}
+\multirow{3}{*}{Surf. Texture} & Joint    & \cellcolor{Peach!57!white}12$\pm$1.2    & \cellcolor{Peach!54!white}12$\pm$1.4    & \cellcolor{Peach!59!white}12$\pm$2    & \cellcolor{Peach!72!white}13$\pm$1.4    & \cellcolor{Peach!99!white}14$\pm$1.1    \\
+                               & wo-CM    & \cellcolor{Peach!17!white}9.5$\pm$2.2    & \cellcolor{Peach!34!white}10$\pm$2.5    & \cellcolor{Peach!36!white}11$\pm$2.7    & \cellcolor{Peach!41!white}11$\pm$2.5    & \cellcolor{Peach!49!white}11$\pm$2.2    \\
+                               & w/-CM    & \cellcolor{Peach!0!white}8.6$\pm$2.3     & \cellcolor{Peach!4!white}8.8$\pm$2.7     & \cellcolor{Peach!15!white}9.4$\pm$3.1     & \cellcolor{Peach!1!white}8.7$\pm$1.8     & \cellcolor{Peach!12!white}9.3$\pm$1.6     \\
+
+\cmidrule{1-2}
+\multirow{3}{*}{Overall} & Joint    & \cellcolor{Peach!54!white}12$\pm$3    & \cellcolor{Peach!58!white}12$\pm$3    & \cellcolor{Peach!72!white}13$\pm$3    & \cellcolor{Peach!75!white}13$\pm$3.1    & \cellcolor{Peach!99!white}15$\pm$3.4    \\
+                               & wo-CM    & \cellcolor{Peach!15!white}9.8$\pm$2.5    & \cellcolor{Peach!36!white}11$\pm$2.7    & \cellcolor{Peach!37!white}11$\pm$2.6    & \cellcolor{Peach!35!white}11$\pm$2.4    & \cellcolor{Peach!40!white}11$\pm$2.3    \\
+                               & w/-CM    & \cellcolor{Peach!0!white}8.9$\pm$2.4     & \cellcolor{Peach!11!white}9.6$\pm$2.6     & \cellcolor{Peach!20!white}10$\pm$2.4     & \cellcolor{Peach!9!white}9.4$\pm$2.3     & \cellcolor{Peach!22!white}10$\pm$2.4     \\
+
+\end{tabular*}
+\end{table}
