@@ -38,24 +38,24 @@ def p_to_stars(p):
 def add_sig(ax, x1, x2, y, text, line_h=0.005):
     """Draw a bracket between x1 and x2 at height y and write text above it."""
     ax.plot([x1, x1, x2, x2], [y, y + line_h, y + line_h, y], lw=0.5, color='k')
-    ax.text((x1 + x2) * 0.5, y+0.001, text, ha='center', va='bottom', fontsize=9)
+    ax.text((x1 + x2) * 0.5, y-0.0025, text, ha='center', va='bottom', fontsize=7)
 
 
 # ################################################ Define the panel here ###############################################
 textwidth_in_inches = 8  # Or fetch from LaTeX if you know the document class
-fig = plt.figure(figsize=(textwidth_in_inches, 10))
+fig = plt.figure(figsize=(textwidth_in_inches, 9.25))
 
 # 5 rows, 13 columns grid
 gs = fig.add_gridspec(
     nrows=5,
     ncols=24,
     height_ratios=[1.25, 1.15, 0.8, 0.8, 0.8],  # one ratio per row
-    hspace=0.75,
+    hspace=0.8,
     wspace=0.5,
     left=0.08,
     right=0.98,
     top=0.95,
-    bottom=0.08
+    bottom=0.06
 )
 
 # ---------- Row 1 ----------
@@ -207,13 +207,15 @@ for i in range(num_subgroups):
 # X-axis ticks centered on each group
 ax_a.set_xticks(indices + bar_width + 0.2)
 ax_a.set_xticklabels(group_labels)
+ax_a.spines['top'].set_visible(False)
+ax_a.spines['right'].set_visible(False)
 
 ax_a.set_ylabel('NMSE', fontsize=10)
 ax_a.set_xticklabels(group_labels, fontsize=10)
 
 handles = [plt.Line2D([0], [0], color=methods_color[i], lw=4, alpha=1.0, linestyle=(0, ())) for i in
            range(len(methods_label))]
-legend = ax_a.legend(handles, methods_label, loc="upper center", bbox_to_anchor=(0.5, 1.35),
+legend = ax_a.legend(handles, methods_label, loc="upper center", bbox_to_anchor=(0.5, 1.3),
                     ncol=len(methods_label), frameon=False,
                     columnspacing=0.9, handlelength=1.25, handletextpad=0.5, fontsize=10)
 
@@ -510,8 +512,8 @@ ax_ref = ax_d[2, 0]
 # Arrow spanning columns 1–3 (in axis coordinates)
 ax_ref.annotate(
     '',
-    xy=(3.25, -0.5),      # arrow end (to the right)
-    xytext=(0.0, -0.5),  # arrow start
+    xy=(3.25, -0.35),      # arrow end (to the right)
+    xytext=(0.0, -0.35),  # arrow start
     xycoords='axes fraction',
     textcoords='axes fraction',
     arrowprops=dict(
@@ -522,24 +524,25 @@ ax_ref.annotate(
     clip_on=False
 )
 
-# Centered text above the arrow
+# Centered text on the arrow with white background
 ax_ref.text(
-    3.25/2, -0.4,
-    r'{Aligned  set}',
+    3.25/2, -0.35,  # Changed y-coordinate to match arrow position
+    r'Aligned set',
     transform=ax_ref.transAxes,
     ha='center',
     va='center',
-    fontsize=10
+    fontsize=10,
+    bbox=dict(facecolor='white', edgecolor='none', pad=2)
 )
 
-# Reference axis: bottom row, column 1
+# Reference axis: bottom row, column 4
 ax_ref = ax_d[2, 3]
 
 # Arrow spanning columns 1–3 (in axis coordinates)
 ax_ref.annotate(
     '',
-    xy=(3.25, -0.5),      # arrow end (to the right)
-    xytext=(0.0, -0.5),  # arrow start
+    xy=(3.25, -0.35),      # arrow end (to the right)
+    xytext=(0.0, -0.35),  # arrow start
     xycoords='axes fraction',
     textcoords='axes fraction',
     arrowprops=dict(
@@ -550,14 +553,15 @@ ax_ref.annotate(
     clip_on=False
 )
 
-# Centered text above the arrow
+# Centered text on the arrow with white background
 ax_ref.text(
-    3.25/2, -0.4,
-    r'{Surprise  set}',
+    3.25/2, -0.35,  # Changed y-coordinate to match arrow position
+    r'Surprise set',
     transform=ax_ref.transAxes,
     ha='center',
     va='center',
-    fontsize=10
+    fontsize=10,
+    bbox=dict(facecolor='white', edgecolor='none', pad=2)
 )
 # plt.show()
 plt.savefig(os.path.join('results', 'Figure_4.pdf'), dpi=500)

@@ -390,6 +390,11 @@ ax_b.text(-0.1, 1.1, r'{b}',
 fig.text(0.025, 0.42, r'{c}',
          ha='right', va='center', fontsize=12)
 
+ax_a.spines['top'].set_visible(False)
+ax_a.spines['right'].set_visible(False)
+ax_b.spines['top'].set_visible(False)
+ax_b.spines['right'].set_visible(False)
+
 plt.savefig(os.path.join('results', 'Figure_3.pdf'), dpi=500)
 plt.savefig(os.path.join('results', 'Figure_3.svg'), dpi=500)
 
